@@ -1,0 +1,41 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: orbit
+      POSTGRES_PASSWORD: orbit
+      POSTGRES_DB: orbit
+    ports:
+      - "5432:5432"
+    volumes:
+      - orbit_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orbit"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm run install:all && npm --prefix server run prisma:generate && npm run dev"
+    environment:
+      DATABASE_URL: postgresql://orbit:orbit@postgres:5432/orbit?schema=public
+    ports:
+      - "5173:5173"
+      - "4000:4000"
+    volumes:
+      - .:/app
+      - root_modules:/app/node_modules
+      - client_modules:/app/client/node_modules
+      - server_modules:/app/server/node_modules
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  orbit_postgres:
+  root_modules:
+  client_modules:
+  server_modules:

@@ -1,0 +1,170 @@
+@baseUrl = http://localhost:4000/api
+
+### Health
+GET {{baseUrl}}/health
+
+### Login (stores the httpOnly cookie in REST Client)
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "maya@acmestudio.com",
+  "password": "password123"
+}
+
+### Current user
+GET {{baseUrl}}/auth/me
+
+### Update profile, defaults, or password
+PUT {{baseUrl}}/auth/profile
+Content-Type: application/json
+
+{
+  "name": "Maya Chen",
+  "defaultCurrency": "USD",
+  "timezone": "Europe/Berlin"
+}
+
+### Logout
+POST {{baseUrl}}/auth/logout
+
+### List campaigns
+GET {{baseUrl}}/campaigns?status=DRAFT&search=summer
+
+### Create campaign
+POST {{baseUrl}}/campaigns
+Content-Type: application/json
+
+{
+  "name": "Autumn launch",
+  "objective": "SALES",
+  "status": "DRAFT",
+  "dailyBudget": 150,
+  "currency": "USD",
+  "startDate": "2026-09-01",
+  "specialAdCategory": "NONE",
+  "adSets": []
+}
+
+### Campaign detail
+GET {{baseUrl}}/campaigns/campaign_id
+
+### Update campaign
+PUT {{baseUrl}}/campaigns/campaign_id
+Content-Type: application/json
+
+{ "name": "Autumn launch — updated", "status": "READY" }
+
+### Change campaign status
+PATCH {{baseUrl}}/campaigns/campaign_id/status
+Content-Type: application/json
+
+{ "status": "PAUSED" }
+
+### Publish campaign (currently returns 403; publishing is disabled)
+POST {{baseUrl}}/campaigns/campaign_id/publish
+
+### Campaign stats
+GET {{baseUrl}}/campaigns/campaign_id/stats
+
+### Delete campaign
+DELETE {{baseUrl}}/campaigns/campaign_id
+
+### Add ad set
+POST {{baseUrl}}/campaigns/campaign_id/adsets
+Content-Type: application/json
+
+{
+  "name": "US broad",
+  "status": "DRAFT",
+  "targeting": { "ageMin": 18, "ageMax": 65, "genders": [], "locations": [{"country":"US"}], "interests": [], "customAudiences": [], "placements": "AUTOMATIC", "deviceTypes": "ALL" },
+  "optimizationGoal": "CONVERSIONS",
+  "billingEvent": "IMPRESSIONS",
+  "bidStrategy": "LOWEST_COST"
+}
+
+### Update / delete ad set
+PUT {{baseUrl}}/adsets/adset_id
+Content-Type: application/json
+
+{ "name": "US broad — updated" }
+
+###
+DELETE {{baseUrl}}/adsets/adset_id
+
+### Add / update / delete ad
+GET {{baseUrl}}/ads
+
+###
+POST {{baseUrl}}/adsets/adset_id/ads
+Content-Type: application/json
+
+{
+  "name": "Static V1",
+  "status": "DRAFT",
+  "format": "SINGLE_IMAGE",
+  "primaryText": "Explore the collection.",
+  "headline": "New arrivals",
+  "callToAction": "SHOP_NOW",
+  "destinationUrl": "https://example.com"
+}
+
+###
+PUT {{baseUrl}}/ads/ad_id
+Content-Type: application/json
+
+{ "headline": "The new collection" }
+
+###
+DELETE {{baseUrl}}/ads/ad_id
+
+### Upload creative
+POST {{baseUrl}}/creatives/upload
+Content-Type: multipart/form-data; boundary=OrbitBoundary
+
+--OrbitBoundary
+Content-Disposition: form-data; name="adId"
+
+ad_id
+--OrbitBoundary
+Content-Disposition: form-data; name="file"; filename="creative.jpg"
+Content-Type: image/jpeg
+
+< ./creative.jpg
+--OrbitBoundary--
+
+### List / delete creatives
+GET {{baseUrl}}/creatives
+
+###
+DELETE {{baseUrl}}/creatives/creative_id
+
+### Meta connection
+GET {{baseUrl}}/meta/status
+
+###
+GET {{baseUrl}}/meta/connect
+
+###
+GET {{baseUrl}}/meta/ad-accounts
+
+###
+GET {{baseUrl}}/meta/pages
+
+### Live campaigns for selected Meta ad account
+GET {{baseUrl}}/meta/campaigns?adAccountId=123456789
+
+### Live account insights
+GET {{baseUrl}}/meta/account-insights?adAccountId=123456789&range=last_7d
+
+###
+PUT {{baseUrl}}/meta/defaults
+Content-Type: application/json
+
+{
+  "adAccountId": "act_123456789",
+  "pageId": "123456789"
+}
+
+###
+DELETE {{baseUrl}}/meta/disconnect
