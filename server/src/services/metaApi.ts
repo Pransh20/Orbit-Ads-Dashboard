@@ -185,6 +185,7 @@ function metaTargeting(targeting: any) {
     age_min: Math.max(18, Number(targeting.ageMin || 18)),
     age_max: Math.min(65, Number(targeting.ageMax || 65)),
     geo_locations: { countries: countries.length ? countries : ["IN"] },
+    targeting_automation: { advantage_audience: 0 },
   };
   if (genders.length) result.genders = genders;
   if (interests.length) result.interests = interests;
