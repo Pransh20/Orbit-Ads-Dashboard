@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { requireAuth, type AuthedRequest } from "./middleware/auth.js";
-import { API_VERSION, graphGet, graphList, listAccessibleAdAccounts, metaConfigStatus, metaOAuthUrl } from "./services/metaApi.js";
+import { API_VERSION, graphGet, graphList, listAccessibleAdAccounts, metaConfigStatus, metaOAuthUrl, publishCampaign } from "./services/metaApi.js";
 import { aiStatus, analyseAd, creativeBrief, goalIntake, reviewCampaign, suggest, updateAiBudget } from "./services/aiSuggestions.js";
 import { deleteStoredFile, fileRecord, upload } from "./services/storage.js";
 
@@ -17,6 +17,7 @@ const prisma = new PrismaClient();
 const app = express();
 const idParam = (value: string | string[]) => Array.isArray(value) ? value[0] : value;
 const META_CACHE_TTL_MS = 5 * 60 * 1000;
+const publishingEnabled = () => String(process.env.PUBLISHING_ENABLED || "false").toLowerCase() === "true";
 const metaCache = new Map<string, { expiresAt: number; value: unknown }>();
 const metaCacheGet = <T>(key: string) => {
   const cached = metaCache.get(key);
@@ -224,7 +225,42 @@ app.patch("/api/campaigns/:id/status", requireAuth, async (req: AuthedRequest, r
   res.json(await prisma.campaign.update({ where: { id: owned.id }, data: { status: req.body.status } }));
 });
 app.post("/api/campaigns/:id/publish", requireAuth, async (req: AuthedRequest, res) => {
-  res.status(403).json({ message: "Publishing is temporarily disabled while the Meta data connection is being verified." });
+  if (!publishingEnabled()) return res.status(403).json({ message: "Publishing is disabled on this server. Set PUBLISHING_ENABLED=true only when you are ready to create PAUSED Meta ads." });
+  const campaign = await prisma.campaign.findFirst({
+    where: { id: idParam(req.params.id), createdById: req.userId },
+    include: { adSets: { include: { ads: { include: { creatives: true } } } } },
+  });
+  if (!campaign) return res.status(404).json({ message: "Campaign not found" });
+  const connection = await prisma.metaConnection.findUnique({ where: { userId: req.userId } });
+  if (!connection) return res.status(422).json({ message: "Connect Meta before publishing." });
+  if (!connection.adAccountId) return res.status(422).json({ message: "Choose a Meta ad account before publishing." });
+  if (!connection.pageId && campaign.adSets.some(adSet => adSet.ads.some(ad => !ad.pageId))) return res.status(422).json({ message: "Choose a default Facebook Page in Meta connection, or set a Page on every ad." });
+  if (!campaign.adSets.length) return res.status(422).json({ message: "Add at least one audience/ad set before publishing." });
+  const ads = campaign.adSets.flatMap(adSet => adSet.ads);
+  if (!ads.length) return res.status(422).json({ message: "Add at least one ad before publishing." });
+  const missingCreative = ads.find(ad => !ad.facebookAdId && !ad.creatives.length);
+  if (missingCreative) return res.status(422).json({ message: `Ad "${missingCreative.name}" needs an uploaded creative before publishing.` });
+  try {
+    const result = await publishCampaign(campaign, {
+      accessToken: decryptToken(connection.accessToken),
+      adAccountId: connection.adAccountId,
+      pageId: connection.pageId || undefined,
+    });
+    const updated = await prisma.$transaction(async tx => {
+      await tx.campaign.update({
+        where: { id: campaign.id },
+        data: { facebookCampaignId: result.campaign.id, status: "PAUSED", publishState: { ...result, mode: "PAUSED", publishedAt: new Date().toISOString() } },
+      });
+      for (const adSet of result.adSets) if (adSet.localId) await tx.adSet.update({ where: { id: adSet.localId }, data: { facebookAdSetId: adSet.id, status: "PAUSED" } });
+      for (const ad of result.ads) if (ad.localId) await tx.ad.update({ where: { id: ad.localId }, data: { facebookAdId: ad.id, status: "PAUSED" } });
+      for (const creative of result.creatives) if (creative.localId) await tx.creative.update({ where: { id: creative.localId }, data: { metaAssetId: creative.id } });
+      return tx.campaign.findUnique({ where: { id: campaign.id }, include: { adSets: { include: { ads: { include: { creatives: true } } } }, createdBy: { select: { id: true, name: true, email: true } } } });
+    });
+    metaCache.clear();
+    res.json({ campaign: updated, publish: { ...result, mode: "PAUSED" } });
+  } catch (error: any) {
+    res.status(502).json({ message: error.message || "Meta publishing failed", step: error.step, code: error.code });
+  }
 });
 app.get("/api/campaigns/:id/stats", requireAuth, async (req: AuthedRequest, res) => {
   const campaign = await prisma.campaign.findFirst({ where: { id: idParam(req.params.id), createdById: req.userId } });
@@ -260,7 +296,7 @@ app.get("/api/meta/status", requireAuth, async (req: AuthedRequest, res) => {
     where: { userId: req.userId },
     select: { adAccountId: true, pageId: true, connectedAt: true, expiresAt: true },
   });
-  res.json({ connected: !!connection, publishingEnabled: false, config: metaConfigStatus(), connection });
+  res.json({ connected: !!connection, publishingEnabled: publishingEnabled(), config: metaConfigStatus(), connection });
 });
 
 app.post("/api/campaigns/:id/adsets", requireAuth, async (req, res) => res.status(201).json(await prisma.adSet.create({ data: { ...req.body, campaignId: idParam(req.params.id) } })));

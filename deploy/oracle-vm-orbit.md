@@ -89,10 +89,10 @@ CLIENT_URL=https://orbit.ixclabs.com
 META_REDIRECT_URI=https://orbit.ixclabs.com/api/meta/callback
 ```
 
-Keep this false until the publishing route is deliberately enabled and tested:
+Safe publishing can be enabled after the Meta app is live and connected. Orbit creates Meta campaigns, ad sets, and ads as `PAUSED` only:
 
 ```txt
-PUBLISHING_ENABLED=false
+PUBLISHING_ENABLED=true
 ```
 
 ## 5. Start Orbit
@@ -226,4 +226,3 @@ git pull
 docker compose -f docker-compose.prod.yml up -d --build
 docker compose -f docker-compose.prod.yml logs -f orbit
 ```
-

@@ -11,10 +11,10 @@ Orbit is a full-stack Meta campaign-management dashboard designed for marketing 
 - Live Meta campaign and account-insights views with no synthetic metrics
 - Multiple ad-account discovery and selection, matching the accounts available to the connected Facebook user
 - Meta OAuth, encrypted token storage, account/Page selection, live insights, and reconnect errors
-- Local campaign drafting and creative management; publishing is intentionally disabled
+- Local campaign drafting and creative management; optional safe publish creates Meta objects as paused
 - Optional AI field suggestions, creative briefs, and pre-save campaign reviews
 
-Publishing endpoints and buttons are disabled while the read-only Meta integration is verified.
+Publishing is gated by `PUBLISHING_ENABLED`. When enabled, Orbit uses safe publish mode: campaigns, ad sets, ads, and creatives are created in Meta with status `PAUSED`, so nothing spends until the user reviews and activates the objects inside Ads Manager.
 
 ## For the end user
 
@@ -78,7 +78,7 @@ Oracle VM + Nginx deployment notes for `orbit.ixclabs.com` are in [deploy/oracle
 6. Put the app ID and secret into `.env`.
 7. Add a separate, long `TOKEN_ENCRYPTION_KEY` used to encrypt Meta tokens at rest.
 8. Set `META_API_VERSION` to a currently supported Graph API version.
-9. Keep `PUBLISHING_ENABLED=false`.
+9. Set `PUBLISHING_ENABLED=true` only when you want safe publish mode. Orbit still creates everything as `PAUSED`.
 
 The OAuth scopes are configurable with `META_OAUTH_SCOPES`. The default is:
 

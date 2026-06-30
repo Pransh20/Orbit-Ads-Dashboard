@@ -9,6 +9,7 @@ export type Creative = {
   fileSize: number;
   thumbnailUrl?: string | null;
   position: number;
+  metaAssetId?: string | null;
   uploadedAt?: string;
   ad?: any;
 };
