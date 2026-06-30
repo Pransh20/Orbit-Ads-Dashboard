@@ -65,6 +65,45 @@ function AiField({children,enabled,form,requestFor,onApply}:{children:React.Reac
   return <div className="ai-field">{children}<AiSuggest enabled={enabled} form={form} requestFor={requestFor} onApply={onApply}/></div>;
 }
 
+type LegalKind = "privacy" | "terms" | "deletion";
+function LegalPage({kind}:{kind:LegalKind}){
+  const content = {
+    privacy: {
+      title: "Privacy Policy",
+      intro: "Orbit Ads Dashboard helps authorized users connect their Meta ad accounts, review campaign performance, and prepare campaign drafts.",
+      sections: [
+        ["Information we collect", "We collect account profile details, login session data, uploaded creative files, local campaign drafts, selected Meta ad account/Page IDs, encrypted Meta access tokens, and performance data returned by Meta APIs after you authorize the connection."],
+        ["How we use information", "We use this information to authenticate users, show connected ad accounts, display campaigns and insights, manage local drafts, provide AI-assisted recommendations when enabled, and maintain application security."],
+        ["Sharing", "We do not sell personal information. Data is shared only with service providers needed to operate the dashboard, such as hosting, database, storage, analytics, AI processing when enabled, and Meta APIs that you explicitly authorize."],
+        ["Security", "Meta access tokens are encrypted at rest. Production traffic is served over HTTPS. Access is limited to authorized workspace users."],
+        ["Contact", "For privacy questions, contact pransh.arora@gmail.com."],
+      ],
+    },
+    terms: {
+      title: "Terms of Service",
+      intro: "By using Orbit Ads Dashboard, you agree to use it only for ad accounts, Pages, and creative assets that you are authorized to manage.",
+      sections: [
+        ["Authorized use", "You are responsible for ensuring that you have the right permissions for any Meta Business, ad account, Page, campaign, creative, lead, or performance data connected to Orbit."],
+        ["Meta policies", "Any campaign, ad, creative, audience, or lead activity must comply with Meta platform policies, advertising standards, and applicable law."],
+        ["No guaranteed performance", "AI suggestions and performance feedback are decision-support tools. They do not guarantee campaign approval, delivery, revenue, leads, or advertising results."],
+        ["Availability", "The dashboard may depend on third-party services including Meta APIs, hosting providers, and AI services. Availability and data freshness can be affected by those providers."],
+        ["Contact", "For support or terms questions, contact pransh.arora@gmail.com."],
+      ],
+    },
+    deletion: {
+      title: "User Data Deletion",
+      intro: "You can request deletion of Orbit Ads Dashboard data connected to your user account or Meta authorization.",
+      sections: [
+        ["Disconnect Meta", "Inside Orbit, go to Facebook setup / Meta connection and choose Disconnect. This removes the active Meta connection from the dashboard."],
+        ["Request deletion", "Email pransh.arora@gmail.com with the subject “Orbit data deletion request” and include the email address used to log in. We will delete or anonymize account records, stored tokens, local campaign drafts, uploaded files, and related application data unless retention is required for security, legal, or operational reasons."],
+        ["Meta data", "Deleting Orbit data does not delete campaigns, ads, leads, or assets inside Meta Ads Manager. Manage those directly in your Meta Business account."],
+        ["Timing", "Deletion requests are normally processed within 30 days after identity and account ownership are verified."],
+      ],
+    },
+  }[kind];
+  return <main className="legal-page"><section className="legal-card"><Link className="legal-brand" to="/"><span className="brand-mark"><Command/></span><strong>Orbit</strong></Link><span className="eyebrow">IXC Labs</span><h1>{content.title}</h1><p className="legal-intro">{content.intro}</p><p className="legal-updated">Last updated: June 30, 2026</p>{content.sections.map(([title,text])=><article key={title}><h2>{title}</h2><p>{text}</p></article>)}<footer><Link to="/privacy">Privacy</Link><Link to="/terms">Terms</Link><Link to="/data-deletion">Data deletion</Link></footer></section></main>;
+}
+
 function ProtectedApp() {
   const me = useCurrentUser();
   if (me.isLoading) return <Loading label="Opening your workspace..."/>;
@@ -539,4 +578,4 @@ function ComingSoon(){return <div className="page"><section className="panel tab
 
 function Login(){const nav=useNavigate();const qc=useQueryClient();const toast=useToast();const [email,setEmail]=useState("maya@acmestudio.com");const [password,setPassword]=useState("password123");const login=useMutation({mutationFn:()=>api("/auth/login",{method:"POST",body:JSON.stringify({email,password})}),onSuccess:()=>{qc.invalidateQueries({queryKey:["me"]});nav("/campaigns")},onError:(e:Error)=>toast(e.message,"error")});return <div className="login-page"><div className="login-visual"><div className="brand light"><span className="brand-mark"><Command/></span><strong>Orbit</strong></div><div className="login-copy"><span>Campaign management, reimagined.</span><h1>Make every ad<br/>feel intentional.</h1><p>A calmer, clearer way to create and manage Meta campaigns.</p></div><div className="visual-card one"><BarChart3/><div><span>WORKFLOW</span><b>Ready</b></div><em>Local-first</em></div></div><form className="login-form" onSubmit={e=>{e.preventDefault();login.mutate()}}><div><h2>Welcome back</h2><p>Sign in to continue to your workspace.</p><Field label="Email address"><input type="email" value={email} onChange={e=>setEmail(e.target.value)}/></Field><Field label="Password"><input type="password" value={password} onChange={e=>setPassword(e.target.value)}/></Field><button className="button primary full" type="submit" disabled={login.isPending}>{login.isPending?"Signing in...":"Sign in"} <ArrowRight/></button><small className="demo-note"><Sparkles/> Local demo credentials are pre-filled.</small></div></form></div>}
 
-export default function App(){return <ToastProvider><Routes><Route path="/login" element={<Login/>}/><Route path="*" element={<ProtectedApp/>}/></Routes></ToastProvider>}
+export default function App(){return <ToastProvider><Routes><Route path="/privacy" element={<LegalPage kind="privacy"/>}/><Route path="/terms" element={<LegalPage kind="terms"/>}/><Route path="/data-deletion" element={<LegalPage kind="deletion"/>}/><Route path="/login" element={<Login/>}/><Route path="*" element={<ProtectedApp/>}/></Routes></ToastProvider>}
