@@ -205,6 +205,7 @@ export async function publishCampaign(input: any, connection?: { accessToken: st
       optimization_goal: safeOptimizationGoal(input.objective, adSet.optimizationGoal),
       billing_event: adSet.billingEvent,
       bid_strategy: safeBidStrategy(adSet.bidStrategy),
+      is_adset_budget_sharing_enabled: false,
       status: "PAUSED",
       start_time: input.startDate,
       ...(input.endDate ? { end_time: input.endDate } : {}),
