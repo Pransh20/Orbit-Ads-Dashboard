@@ -143,6 +143,16 @@ const safeBidStrategy = (bidStrategy?: string) => {
   return bidStrategy;
 };
 
+const metaDateTime = (value?: string | Date | null) => {
+  if (!value) return undefined;
+  if (value instanceof Date) return value.toISOString();
+  const raw = String(value).trim();
+  if (!raw) return undefined;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return `${raw}T12:00:00+0000`;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? raw : parsed.toISOString();
+};
+
 const countryAliases: Record<string, string> = {
   INDIA: "IN",
   "UNITED KINGDOM": "GB",
@@ -208,8 +218,8 @@ export async function publishCampaign(input: any, connection?: { accessToken: st
       bid_strategy: safeBidStrategy(adSet.bidStrategy),
       is_adset_budget_sharing_enabled: "False",
       status: "PAUSED",
-      start_time: input.startDate,
-      ...(input.endDate ? { end_time: input.endDate } : {}),
+      start_time: metaDateTime(input.startDate),
+      ...(input.endDate ? { end_time: metaDateTime(input.endDate) } : {}),
       ...(input.dailyBudget ? { daily_budget: Math.round(Number(input.dailyBudget) * 100) } : {}),
       ...(input.lifetimeBudget ? { lifetime_budget: Math.round(Number(input.lifetimeBudget) * 100) } : {}),
       ...(adSet.bidAmount ? { bid_amount: Math.round(Number(adSet.bidAmount) * 100) } : {}),
