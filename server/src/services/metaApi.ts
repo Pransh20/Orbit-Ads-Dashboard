@@ -192,6 +192,7 @@ export async function publishCampaign(input: any, connection?: { accessToken: st
       name: input.name,
       objective: safePublishObjective(input.objective),
       status: "PAUSED",
+      is_adset_budget_sharing_enabled: "False",
       special_ad_categories: input.specialAdCategory && input.specialAdCategory !== "NONE" ? [input.specialAdCategory] : [],
     }) as MetaResult;
   const adSets: MetaResult[] = [];
@@ -205,7 +206,7 @@ export async function publishCampaign(input: any, connection?: { accessToken: st
       optimization_goal: safeOptimizationGoal(input.objective, adSet.optimizationGoal),
       billing_event: adSet.billingEvent,
       bid_strategy: safeBidStrategy(adSet.bidStrategy),
-      is_adset_budget_sharing_enabled: false,
+      is_adset_budget_sharing_enabled: "False",
       status: "PAUSED",
       start_time: input.startDate,
       ...(input.endDate ? { end_time: input.endDate } : {}),
