@@ -259,7 +259,7 @@ app.post("/api/campaigns/:id/publish", requireAuth, async (req: AuthedRequest, r
     metaCache.clear();
     res.json({ campaign: updated, publish: { ...result, mode: "PAUSED" } });
   } catch (error: any) {
-    res.status(502).json({ message: error.message || "Meta publishing failed", step: error.step, code: error.code });
+    res.status(502).json({ message: error.message || "Meta publishing failed", step: error.step, code: error.code, meta: error.details });
   }
 });
 app.get("/api/campaigns/:id/stats", requireAuth, async (req: AuthedRequest, res) => {

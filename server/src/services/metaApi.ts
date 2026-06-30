@@ -39,8 +39,9 @@ async function request(path: string, accessToken: string, body?: Record<string, 
       attempt++;
       continue;
     }
-    const error = new Error(data?.error?.message || "Meta API request failed") as Error & { code?: number };
+    const error = new Error(data?.error?.error_user_msg || data?.error?.message || "Meta API request failed") as Error & { code?: number; details?: any };
     error.code = code;
+    error.details = data?.error;
     throw error;
   }
 }
@@ -126,14 +127,57 @@ const objectiveMap: Record<string, string> = {
   LEAD_GENERATION: "OUTCOME_LEADS", CONVERSIONS: "OUTCOME_SALES", SALES: "OUTCOME_SALES",
 };
 
+const safePublishObjective = (objective: string) => {
+  if (["CONVERSIONS", "SALES", "LEAD_GENERATION", "OUTCOME_SALES", "OUTCOME_LEADS"].includes(objective)) return "OUTCOME_TRAFFIC";
+  return objectiveMap[objective] || objective;
+};
+
+const safeOptimizationGoal = (objective: string, optimizationGoal: string) => {
+  if (["AWARENESS", "REACH", "OUTCOME_AWARENESS"].includes(objective) && optimizationGoal === "REACH") return "REACH";
+  return "LINK_CLICKS";
+};
+
+const safeBidStrategy = (bidStrategy?: string) => {
+  if (!bidStrategy || bidStrategy === "LOWEST_COST") return "LOWEST_COST_WITHOUT_CAP";
+  if (bidStrategy === "BID_CAP") return "LOWEST_COST_WITH_BID_CAP";
+  return bidStrategy;
+};
+
+const countryAliases: Record<string, string> = {
+  INDIA: "IN",
+  "UNITED KINGDOM": "GB",
+  UK: "GB",
+  "UNITED STATES": "US",
+  USA: "US",
+};
+
+const countryCode = (value: unknown) => {
+  const raw = String(value || "").trim().toUpperCase();
+  if (/^[A-Z]{2}$/.test(raw)) return raw;
+  return countryAliases[raw];
+};
+
+const genderCode = (value: unknown) => {
+  const raw = String(value || "").trim().toUpperCase();
+  if (raw === "1" || raw === "MEN" || raw === "MALE") return 1;
+  if (raw === "2" || raw === "WOMEN" || raw === "FEMALE") return 2;
+  return null;
+};
+
 function metaTargeting(targeting: any) {
+  const countries = (targeting.locations || []).map((item: any) => countryCode(item.country || item)).filter(Boolean);
+  const genders = (targeting.genders || []).map(genderCode).filter((value: number | null): value is number => value === 1 || value === 2);
+  const interests = (targeting.interests || [])
+    .filter((item: any) => item.id && !Number.isNaN(Number(item.id)) && Number(item.id) > 0)
+    .map((item: any) => ({ id: String(item.id), name: item.name }))
+    .slice(0, 10);
   const result: any = {
-    age_min: targeting.ageMin,
-    age_max: targeting.ageMax,
-    geo_locations: { countries: (targeting.locations || []).map((item: any) => item.country).filter(Boolean) },
+    age_min: Math.max(18, Number(targeting.ageMin || 18)),
+    age_max: Math.min(65, Number(targeting.ageMax || 65)),
+    geo_locations: { countries: countries.length ? countries : ["IN"] },
   };
-  if (targeting.genders?.length) result.genders = targeting.genders.map(Number);
-  if (targeting.interests?.length) result.interests = targeting.interests.filter((item: any) => item.id && !Number.isNaN(Number(item.id)));
+  if (genders.length) result.genders = genders;
+  if (interests.length) result.interests = interests;
   if (targeting.customAudiences?.length) result.custom_audiences = targeting.customAudiences.map((item: any) => ({ id: item.id }));
   if (targeting.deviceTypes === "MOBILE") result.device_platforms = ["mobile"];
   if (targeting.deviceTypes === "DESKTOP") result.device_platforms = ["desktop"];
@@ -146,7 +190,7 @@ export async function publishCampaign(input: any, connection?: { accessToken: st
     ? { id: input.facebookCampaignId, step: "campaign", reused: true }
     : await request(`act_${connection.adAccountId}/campaigns`, connection.accessToken, {
       name: input.name,
-      objective: objectiveMap[input.objective] || input.objective,
+      objective: safePublishObjective(input.objective),
       status: "PAUSED",
       special_ad_categories: input.specialAdCategory && input.specialAdCategory !== "NONE" ? [input.specialAdCategory] : [],
     }) as MetaResult;
@@ -158,9 +202,9 @@ export async function publishCampaign(input: any, connection?: { accessToken: st
       name: adSet.name,
       campaign_id: campaign.id,
       targeting: metaTargeting(adSet.targeting),
-      optimization_goal: adSet.optimizationGoal,
+      optimization_goal: safeOptimizationGoal(input.objective, adSet.optimizationGoal),
       billing_event: adSet.billingEvent,
-      bid_strategy: adSet.bidStrategy,
+      bid_strategy: safeBidStrategy(adSet.bidStrategy),
       status: "PAUSED",
       start_time: input.startDate,
       ...(input.endDate ? { end_time: input.endDate } : {}),
