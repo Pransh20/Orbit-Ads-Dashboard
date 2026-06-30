@@ -52,6 +52,13 @@ model Campaign {
   id                 String         @id @default(cuid())
   name               String
   objective          String
+  goalLabel          String?
+  businessDescription String?
+  websiteUrl         String?
+  brandName          String?
+  parentCampaignId   String?
+  relaunchReason     String?
+  aiGenerated        Boolean        @default(false)
   status             CampaignStatus @default(DRAFT)
   dailyBudget        Decimal?       @db.Decimal(12, 2)
   lifetimeBudget     Decimal?       @db.Decimal(12, 2)
@@ -66,9 +73,11 @@ model Campaign {
   createdById        String
   createdBy          User           @relation(fields: [createdById], references: [id])
   adSets             AdSet[]
+  performanceSnapshots PerformanceSnapshot[]
 
   @@index([status])
   @@index([createdById])
+  @@index([parentCampaignId])
 }
 
 model AdSet {
@@ -76,6 +85,8 @@ model AdSet {
   campaignId      String
   campaign        Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   name            String
+  audienceLabel   String?
+  audienceReasoning String?
   status          AdStatus @default(DRAFT)
   targeting       Json
   optimizationGoal String
@@ -88,6 +99,27 @@ model AdSet {
   ads             Ad[]
 
   @@index([campaignId])
+}
+
+model PerformanceSnapshot {
+  id          String   @id @default(cuid())
+  campaignId  String
+  campaign    Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  fetchedAt   DateTime @default(now())
+  dateRange   String
+  impressions Int?
+  reach       Int?
+  clicks      Int?
+  ctr         Float?
+  spend       Float?
+  cpm         Float?
+  cpc         Float?
+  frequency   Float?
+  aiVerdict   String?
+  aiSummary   String?
+  rawMetaJson Json?
+
+  @@index([campaignId, fetchedAt])
 }
 
 model Ad {

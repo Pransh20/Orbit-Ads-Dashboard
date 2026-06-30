@@ -3,6 +3,20 @@ import path from "node:path";
 
 export const API_VERSION = process.env.META_API_VERSION || "v25.0";
 const base = `https://graph.facebook.com/${API_VERSION}`;
+const DEFAULT_OAUTH_SCOPES = [
+  "ads_read",
+  "ads_management",
+  "business_management",
+  "pages_show_list",
+  "pages_read_engagement",
+];
+
+export function metaOAuthScopes() {
+  return (process.env.META_OAUTH_SCOPES || DEFAULT_OAUTH_SCOPES.join(","))
+    .split(",")
+    .map(scope => scope.trim())
+    .filter(Boolean);
+}
 
 type MetaResult = { id: string; step: string; reused?: boolean; localId?: string };
 
@@ -220,7 +234,7 @@ export function metaOAuthUrl(state: string) {
     client_id: appId,
     redirect_uri: redirectUri,
     state,
-    scope: "ads_read,business_management,pages_show_list,pages_read_engagement",
+    scope: metaOAuthScopes().join(","),
     response_type: "code",
   });
   return `https://www.facebook.com/${API_VERSION}/dialog/oauth?${params}`;
@@ -236,5 +250,6 @@ export function metaConfigStatus() {
     appSecretConfigured: !!appSecret,
     redirectUri,
     apiVersion: API_VERSION,
+    scopes: metaOAuthScopes(),
   };
 }

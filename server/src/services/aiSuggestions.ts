@@ -98,6 +98,91 @@ const campaignReviewSchema = {
   required: ["score", "verdict", "issues", "strengths", "estimatedPerformance"],
 };
 
+const goalIntakeSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    campaignName: { type: "string" },
+    adSetName: { type: "string" },
+    adName: { type: "string" },
+    primaryText: { type: "string" },
+    headline: { type: "string" },
+    description: { type: "string" },
+    callToAction: { type: "string" },
+    targeting: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        ageMin: { type: "integer" },
+        ageMax: { type: "integer" },
+        genders: { type: "array", items: { type: "string" } },
+        locations: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: { country: { type: "string" }, city: { type: ["string", "null"] }, region: { type: ["string", "null"] } },
+            required: ["country", "city", "region"],
+          },
+        },
+        interests: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: { name: { type: "string" } },
+            required: ["name"],
+          },
+        },
+        placements: { type: "string", enum: ["AUTOMATIC", "MANUAL"] },
+      },
+      required: ["ageMin", "ageMax", "genders", "locations", "interests", "placements"],
+    },
+    dailyBudget: { type: "number" },
+    currency: { type: "string" },
+    objective: { type: "string" },
+    reasoning: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        targeting: { type: "string" },
+        budget: { type: "string" },
+        copy: { type: "string" },
+      },
+      required: ["targeting", "budget", "copy"],
+    },
+  },
+  required: ["campaignName", "adSetName", "adName", "primaryText", "headline", "description", "callToAction", "targeting", "dailyBudget", "currency", "objective", "reasoning"],
+};
+
+const adAnalysisSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    verdict: { type: "string", enum: ["DOING_WELL", "NEEDS_WORK", "NOT_WORKING"] },
+    verdictHeadline: { type: "string" },
+    summary: { type: "string" },
+    improvements: {
+      type: "array",
+      maxItems: 3,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          what: { type: "string" },
+          why: { type: "string" },
+          newValue: { type: "string" },
+          field: { type: "string" },
+          confidence: { type: "string", enum: ["HIGH", "MEDIUM"] },
+        },
+        required: ["what", "why", "newValue", "field", "confidence"],
+      },
+    },
+    encouragement: { type: "string" },
+  },
+  required: ["verdict", "verdictHeadline", "summary", "improvements", "encouragement"],
+};
+
 function hashRequest(endpoint: string, body: unknown) {
   return crypto.createHash("sha256").update(`${endpoint}:${JSON.stringify(body)}`).digest("hex");
 }
@@ -169,6 +254,7 @@ async function structuredCall(
   schemaName: string,
   schema: Record<string, unknown>,
   task: string,
+  systemPrompt = SYSTEM_PROMPT,
 ) {
   if (!process.env.OPENAI_API_KEY) {
     throw Object.assign(new Error("AI features are not configured"), { status: 503 });
@@ -193,7 +279,7 @@ async function structuredCall(
       model: MODEL,
       temperature: 0.7,
       input: [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: systemPrompt },
         { role: "user", content: `${task}\n\nCampaign data:\n${JSON.stringify(body)}` },
       ],
       text: {
@@ -244,5 +330,21 @@ export function reviewCampaign(prisma: PrismaClient, userId: string, body: unkno
   return structuredCall(
     prisma, userId, "review-campaign", body, "campaign_review", campaignReviewSchema,
     "Audit this campaign before it is saved. Check objective alignment, audience, budget, placements, copy clarity, destination URLs, creative format, and likely Meta policy risks. Estimates must be conservative ranges and clearly treated as estimates.",
+  );
+}
+
+export function goalIntake(prisma: PrismaClient, userId: string, body: unknown) {
+  return structuredCall(
+    prisma, userId, "goal-intake", body, "goal_intake", goalIntakeSchema,
+    "Generate a complete, ready-to-publish Facebook ad setup for the chosen goal and business. Fill every field with specific realistic values. Never use placeholder text.",
+    "You are an expert Facebook advertiser generating a complete, ready-to-publish ad setup for a first-time advertiser. Fill in every field with specific, realistic, high-quality values based on the business description. Make the ad copy compelling and natural. Never use placeholder text. Always respond in valid JSON only, no markdown.",
+  );
+}
+
+export function analyseAd(prisma: PrismaClient, userId: string, body: unknown) {
+  return structuredCall(
+    prisma, userId, "analyse-ad", body, "ad_analysis", adAnalysisSchema,
+    "Analyse this advertising object at the requested level and return practical improvements. Use the supplied metrics and current data only. Keep the advice specific and plain.",
+    "You are a friendly, plain-English advertising coach helping a small business owner or first-time advertiser understand how their Facebook ad is performing and how to improve it. You never use marketing jargon. Explain everything as if the user is 15 years old and intelligent but has no ad experience. Be specific, honest, and encouraging. Always respond in valid JSON only.",
   );
 }

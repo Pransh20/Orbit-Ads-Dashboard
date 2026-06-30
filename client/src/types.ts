@@ -32,6 +32,8 @@ export type Ad = {
 export type AdSet = {
   id?: string;
   name: string;
+  audienceLabel?: string | null;
+  audienceReasoning?: string | null;
   status: string;
   targeting: {
     ageMin: number;
@@ -57,6 +59,13 @@ export type Campaign = {
   id: string;
   name: string;
   objective: string;
+  goalLabel?: string | null;
+  businessDescription?: string | null;
+  websiteUrl?: string | null;
+  brandName?: string | null;
+  parentCampaignId?: string | null;
+  relaunchReason?: string | null;
+  aiGenerated?: boolean;
   status: CampaignStatus;
   dailyBudget: number | null;
   lifetimeBudget: number | null;

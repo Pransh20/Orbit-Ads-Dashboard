@@ -5,16 +5,36 @@ import cookieParser from "cookie-parser";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { requireAuth, type AuthedRequest } from "./middleware/auth.js";
 import { API_VERSION, graphGet, graphList, listAccessibleAdAccounts, metaConfigStatus, metaOAuthUrl } from "./services/metaApi.js";
-import { aiStatus, creativeBrief, reviewCampaign, suggest, updateAiBudget } from "./services/aiSuggestions.js";
+import { aiStatus, analyseAd, creativeBrief, goalIntake, reviewCampaign, suggest, updateAiBudget } from "./services/aiSuggestions.js";
 import { deleteStoredFile, fileRecord, upload } from "./services/storage.js";
 
 const prisma = new PrismaClient();
 const app = express();
 const idParam = (value: string | string[]) => Array.isArray(value) ? value[0] : value;
+const META_CACHE_TTL_MS = 5 * 60 * 1000;
+const metaCache = new Map<string, { expiresAt: number; value: unknown }>();
+const metaCacheGet = <T>(key: string) => {
+  const cached = metaCache.get(key);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    metaCache.delete(key);
+    return null;
+  }
+  return cached.value as T;
+};
+const metaCacheSet = (key: string, value: unknown, ttl = META_CACHE_TTL_MS) => {
+  metaCache.set(key, { value, expiresAt: Date.now() + ttl });
+  return value;
+};
+const isMetaRateLimit = (error: any) => [4, 17, 32, 613].includes(Number(error?.code)) || String(error?.message || "").toLowerCase().includes("request limit");
+const metaErrorPayload = (error: any) => isMetaRateLimit(error)
+  ? { message: "Facebook is temporarily rate limiting this connection. Wait a few minutes, then refresh. We have reduced dashboard requests and cached reads to avoid this happening as often.", code: error.code, rateLimited: true }
+  : { message: error.message, code: error.code, reconnectRequired: [102,190].includes(error.code) };
 const tokenKey = crypto.createHash("sha256").update(process.env.TOKEN_ENCRYPTION_KEY || process.env.JWT_SECRET || "development-secret").digest();
 const encryptToken = (value: string) => {
   const iv = crypto.randomBytes(12);
@@ -102,6 +122,23 @@ app.post("/api/ai/review-campaign", requireAuth, async (req: AuthedRequest, res)
     res.status(error.status || 500).json({ message: error.message, code: error.code });
   }
 });
+app.post("/api/ai/goal-intake", requireAuth, async (req: AuthedRequest, res) => {
+  try {
+    const result = await goalIntake(prisma, req.userId!, req.body);
+    res.json({ ...(result.data as object), cached: result.cached });
+  } catch (error: any) {
+    res.status(error.status || 500).json({ message: error.message, code: error.code });
+  }
+});
+app.post("/api/ai/analyse-ad", requireAuth, async (req: AuthedRequest, res) => {
+  if (!["goal", "audience", "ad"].includes(req.body.level)) return res.status(422).json({ message: "Choose whether to improve the goal, audience, or ad" });
+  try {
+    const result = await analyseAd(prisma, req.userId!, req.body);
+    res.json({ ...(result.data as object), cached: result.cached });
+  } catch (error: any) {
+    res.status(error.status || 500).json({ message: error.message, code: error.code });
+  }
+});
 
 app.get("/api/campaigns", requireAuth, async (req: AuthedRequest, res) => {
   const { status, search, from, to } = req.query;
@@ -139,7 +176,7 @@ app.put("/api/campaigns/:id", requireAuth, async (req: AuthedRequest, res) => {
   const owned = await prisma.campaign.findFirst({ where: { id: campaignId, createdById: req.userId } });
   if (!owned) return res.status(404).json({ message: "Campaign not found" });
   const { adSets, ...input } = req.body;
-  const allowed = ["name","objective","status","dailyBudget","lifetimeBudget","currency","startDate","endDate","specialAdCategory"];
+  const allowed = ["name","objective","goalLabel","businessDescription","websiteUrl","brandName","parentCampaignId","relaunchReason","aiGenerated","status","dailyBudget","lifetimeBudget","currency","startDate","endDate","specialAdCategory"];
   const data: any = Object.fromEntries(Object.entries(input).filter(([key]) => allowed.includes(key)));
   if (data.startDate) data.startDate = new Date(data.startDate as string);
   if ("endDate" in data) data.endDate = data.endDate ? new Date(data.endDate as string) : null;
@@ -323,10 +360,14 @@ app.put("/api/meta/defaults", requireAuth, async (req: AuthedRequest, res) => {
 app.get("/api/meta/ad-accounts", requireAuth, async (req: AuthedRequest, res) => {
   const connection = await prisma.metaConnection.findUnique({ where: { userId: req.userId } });
   if (!connection) return res.json([]);
+  const cacheKey = `meta:accounts:${req.userId}:${connection.connectedAt.getTime()}`;
+  const cached = metaCacheGet(cacheKey);
+  if (cached) return res.json(cached);
   try {
-    res.json(await listAccessibleAdAccounts(decryptToken(connection.accessToken)));
+    const data = await listAccessibleAdAccounts(decryptToken(connection.accessToken));
+    res.json(metaCacheSet(cacheKey, data, 10 * 60 * 1000));
   } catch (error: any) {
-    res.status(502).json({ message: error.message, reconnectRequired: [102,190].includes(error.code) });
+    res.status(isMetaRateLimit(error) ? 429 : 502).json(metaErrorPayload(error));
   }
 });
 app.get("/api/meta/pages", requireAuth, async (req: AuthedRequest, res) => {
@@ -342,14 +383,36 @@ app.get("/api/meta/campaigns", requireAuth, async (req: AuthedRequest, res) => {
   const connection = await prisma.metaConnection.findUnique({ where: { userId: req.userId } });
   if (!connection) return res.status(422).json({ message: "Connect Meta before loading campaigns" });
   const requested = String(req.query.adAccountId || connection.adAccountId).replace("act_", "");
+  const accessToken = decryptToken(connection.accessToken);
+  const range = String(req.query.range || "last_7d");
+  const includeInsights = req.query.includeInsights === "1";
+  const cacheKey = `meta:campaigns:${req.userId}:${requested}:${range}:${includeInsights}`;
+  const cached = metaCacheGet(cacheKey);
+  if (cached) return res.json(cached);
   try {
-    const rows = await graphList(`act_${requested}/campaigns`, decryptToken(connection.accessToken), {
+    const rows = await graphList(`act_${requested}/campaigns`, accessToken, {
       fields: "id,name,objective,status,effective_status,daily_budget,lifetime_budget,budget_remaining,buying_type,start_time,stop_time,created_time,updated_time,special_ad_categories",
       limit: "100",
     });
-    res.json(rows);
+    if (!includeInsights) return res.json(metaCacheSet(cacheKey, rows));
+    let insightByCampaign = new Map<string, any>();
+    let insightError: string | null = null;
+    try {
+      const insightRows = await graphList(`act_${requested}/insights`, accessToken, {
+        fields: "campaign_id,campaign_name,impressions,reach,clicks,inline_link_clicks,ctr,spend,cpm,cpc,frequency,actions,unique_actions,action_values,cost_per_action_type",
+        date_preset: range,
+        level: "campaign",
+        limit: "500",
+      });
+      insightByCampaign = new Map(insightRows.map((item: any) => [String(item.campaign_id), item]));
+    } catch (error: any) {
+      if (!isMetaRateLimit(error)) throw error;
+      insightError = metaErrorPayload(error).message;
+    }
+    const enriched = rows.map((row: any) => ({ ...row, insights: insightByCampaign.has(String(row.id)) ? [insightByCampaign.get(String(row.id))] : [], ...(insightError ? { insightError } : {}) }));
+    res.json(metaCacheSet(cacheKey, enriched));
   } catch (error: any) {
-    res.status(502).json({ message: error.message, reconnectRequired: [102,190].includes(error.code) });
+    res.status(isMetaRateLimit(error) ? 429 : 502).json(metaErrorPayload(error));
   }
 });
 app.get("/api/meta/campaigns/:id/detail", requireAuth, async (req: AuthedRequest, res) => {
@@ -358,12 +421,15 @@ app.get("/api/meta/campaigns/:id/detail", requireAuth, async (req: AuthedRequest
   const requested = String(req.query.adAccountId || connection.adAccountId).replace("act_", "");
   const campaignId = idParam(req.params.id);
   const accessToken = decryptToken(connection.accessToken);
+  const range = String(req.query.range || "last_7d");
+  const cacheKey = `meta:campaign-detail:${req.userId}:${requested}:${campaignId}:${range}`;
+  const cached = metaCacheGet(cacheKey);
+  if (cached) return res.json(cached);
   try {
-    const accessible = await listAccessibleAdAccounts(accessToken);
-    const account = accessible.accounts.find(item => String(item.id).replace("act_", "") === requested);
-    if (!account) return res.status(403).json({ message: "This Meta ad account is not available to the connected user" });
-
-    const [campaign, adSets, ads, insights, adInsights] = await Promise.all([
+    const [account, campaign, adSets, ads, insights, adInsights] = await Promise.all([
+      graphGet(`act_${requested}`, accessToken, {
+        fields: "id,name,currency,account_status,timezone_name",
+      }),
       graphGet(campaignId, accessToken, {
         fields: "id,account_id,name,objective,status,effective_status,daily_budget,lifetime_budget,budget_remaining,buying_type,start_time,stop_time,created_time,updated_time,special_ad_categories",
       }),
@@ -376,15 +442,15 @@ app.get("/api/meta/campaigns/:id/detail", requireAuth, async (req: AuthedRequest
         limit: "100",
       }),
       graphList(`${campaignId}/insights`, accessToken, {
-        fields: "date_start,date_stop,impressions,reach,clicks,inline_link_clicks,ctr,spend,cpm,cpc,frequency",
-        date_preset: String(req.query.range || "last_7d"),
+        fields: "date_start,date_stop,impressions,reach,clicks,inline_link_clicks,ctr,spend,cpm,cpc,frequency,actions,unique_actions,action_values,cost_per_action_type",
+        date_preset: range,
         time_increment: "1",
         level: "campaign",
         limit: "100",
       }),
       graphList(`${campaignId}/insights`, accessToken, {
-        fields: "ad_id,ad_name,adset_id,adset_name,impressions,reach,clicks,inline_link_clicks,ctr,frequency",
-        date_preset: String(req.query.range || "last_7d"),
+        fields: "ad_id,ad_name,adset_id,adset_name,impressions,reach,clicks,inline_link_clicks,ctr,spend,cpm,cpc,frequency,actions,unique_actions,action_values,cost_per_action_type,video_play_actions,video_p25_watched_actions,video_p50_watched_actions,video_p75_watched_actions,video_p95_watched_actions,video_p100_watched_actions",
+        date_preset: range,
         level: "ad",
         limit: "500",
       }),
@@ -393,9 +459,9 @@ app.get("/api/meta/campaigns/:id/detail", requireAuth, async (req: AuthedRequest
     if (String(campaign.account_id).replace("act_", "") !== requested) {
       return res.status(403).json({ message: "This campaign does not belong to the selected Meta ad account" });
     }
-    res.json({ account, campaign, adSets, ads, insights, adInsights });
+    res.json(metaCacheSet(cacheKey, { account, campaign, adSets, ads, insights, adInsights }));
   } catch (error: any) {
-    res.status(502).json({ message: error.message, reconnectRequired: [102,190].includes(error.code) });
+    res.status(isMetaRateLimit(error) ? 429 : 502).json(metaErrorPayload(error));
   }
 });
 app.get("/api/meta/account-insights", requireAuth, async (req: AuthedRequest, res) => {
@@ -415,6 +481,18 @@ app.get("/api/meta/account-insights", requireAuth, async (req: AuthedRequest, re
     res.status(502).json({ message: error.message, reconnectRequired: [102,190].includes(error.code) });
   }
 });
+
+if (process.env.NODE_ENV === "production") {
+  const clientDist = [
+    process.env.CLIENT_DIST_PATH,
+    path.resolve("client/dist"),
+    path.resolve("../client/dist"),
+  ].filter((candidate): candidate is string => Boolean(candidate)).find(candidate => fs.existsSync(candidate));
+  if (clientDist) {
+    app.use(express.static(clientDist));
+    app.get("*", (_req, res) => res.sendFile(path.join(clientDist, "index.html")));
+  }
+}
 
 app.use((error: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(error);

@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api, campaignInclude } from "./api";
+import { GOAL_OPTIONS, PLAIN_LANGUAGE, plainObjective, plainStatus } from "./constants/language";
 import type { Ad, AdSet, Campaign, CampaignStatus, Creative, User } from "./types";
 
 const money = (value: number, currency = "USD") => new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(value);
@@ -41,6 +42,12 @@ const Field = ({ label, hint, children }: { label: string; hint?: string; childr
 function useCurrentUser() { return useQuery({ queryKey: ["me"], queryFn: () => api<User>("/auth/me"), retry: false }); }
 function useMetaStatus() { return useQuery({ queryKey: ["meta-status"], queryFn: () => api<any>("/meta/status"), retry: false }); }
 function useAiStatus() { return useQuery({ queryKey: ["ai-status"], queryFn: () => api<any>("/ai/status"), retry: false }); }
+const metaQueryOptions = { retry: false, staleTime: 5 * 60 * 1000, refetchOnWindowFocus: false } as const;
+const readableMetaError = (error: unknown) => {
+  const err = error as any;
+  if (err?.details?.rateLimited || String(err?.message || "").toLowerCase().includes("request limit")) return "Facebook is temporarily rate limiting this connection. Please wait a few minutes, then refresh this page. The dashboard now uses fewer Facebook requests and caches results for a few minutes.";
+  return err?.message || "Facebook data could not be loaded.";
+};
 
 type AiSuggestion = { value:string; reasoning:string; confidence:"HIGH"|"MEDIUM"|"LOW" };
 function AiSuggest({enabled,form,requestFor,onApply}:{enabled:boolean;form:any;requestFor:string;onApply:(value:string)=>void}){
@@ -63,19 +70,29 @@ function ProtectedApp() {
   if (me.isLoading) return <Loading label="Opening your workspace..."/>;
   if (me.isError) return <Navigate to="/login" replace/>;
   return <AppShell user={me.data!}><Routes>
-    <Route path="/" element={<Navigate to="/campaigns" replace/>}/>
-    <Route path="/campaigns" element={<CampaignDashboard/>}/>
-    <Route path="/campaigns/new" element={<CampaignWizard/>}/>
-    <Route path="/campaigns/:id/edit" element={<CampaignWizard/>}/>
-    <Route path="/campaigns/:id" element={<CampaignDetail/>}/>
+    <Route path="/" element={<GoalLaunchWizard/>}/>
+    <Route path="/goals" element={<GoalsDashboard/>}/>
+    <Route path="/goals/meta/:id" element={<MetaGoalDetail/>}/>
+    <Route path="/goals/:id" element={<GoalDetail/>}/>
+    <Route path="/goals/:id/edit" element={<CampaignWizard/>}/>
+    <Route path="/advanced/campaigns/new" element={<CampaignWizard/>}/>
+    <Route path="/advanced/campaigns/:id/edit" element={<CampaignWizard/>}/>
+    <Route path="/campaigns" element={<Navigate to="/goals" replace/>}/>
+    <Route path="/campaigns/new" element={<Navigate to="/" replace/>}/>
+    <Route path="/campaigns/:id/edit" element={<LegacyCampaignEditRedirect/>}/>
+    <Route path="/campaigns/:id" element={<LegacyCampaignRedirect/>}/>
     <Route path="/meta/campaigns/:id" element={<MetaCampaignDetail/>}/>
-    <Route path="/creatives" element={<CreativeLibrary/>}/>
+    <Route path="/media" element={<CreativeLibrary/>}/>
+    <Route path="/creatives" element={<Navigate to="/media" replace/>}/>
     <Route path="/audiences" element={<ComingSoon/>}/>
     <Route path="/settings/meta-connection" element={<MetaConnection/>}/>
     <Route path="/settings" element={<SettingsPage/>}/>
-    <Route path="*" element={<Navigate to="/campaigns" replace/>}/>
+    <Route path="*" element={<Navigate to="/goals" replace/>}/>
   </Routes></AppShell>;
 }
+
+function LegacyCampaignRedirect(){const {id}=useParams();return <Navigate to={`/goals/${id}`} replace/>}
+function LegacyCampaignEditRedirect(){const {id}=useParams();return <Navigate to={`/goals/${id}/edit`} replace/>}
 
 function AppShell({ children, user }: { children: React.ReactNode; user: User }) {
   const [help, setHelp] = useState(false);
@@ -84,22 +101,24 @@ function AppShell({ children, user }: { children: React.ReactNode; user: User })
   const qc = useQueryClient();
   const nav = useNavigate();
   const location = useLocation();
-  const title = location.pathname.includes("/new") ? "Create campaign" : location.pathname.includes("/edit") ? "Edit campaign" : location.pathname.startsWith("/creatives") ? "Creative library" : location.pathname.startsWith("/settings") ? "Settings" : /^\/(meta\/)?campaigns\/[^/]+$/.test(location.pathname) ? "Campaign details" : location.pathname.startsWith("/audiences") ? "Audiences" : "Campaigns";
+  const focusMode = location.pathname === "/";
+  const title = location.pathname === "/goals" ? "My Goals" : location.pathname.startsWith("/goals/") ? "Goal details" : location.pathname.startsWith("/advanced") || location.pathname.includes("/edit") ? "Advanced mode" : location.pathname.startsWith("/media") ? "My Images & Videos" : location.pathname.startsWith("/settings") ? "Settings" : /^\/meta\/campaigns\/[^/]+$/.test(location.pathname) ? "Live Meta details" : location.pathname.startsWith("/audiences") ? "Audiences" : "Launch an Ad";
   const initials = user.name.split(" ").map(x => x[0]).join("").slice(0, 2).toUpperCase();
   const logout = async () => { await api("/auth/logout", { method: "POST" }); qc.clear(); nav("/login"); };
+  if(focusMode)return <div className="focus-shell">{children}</div>;
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark"><Command/></span><strong>Orbit</strong></div>
-      <nav><p className="nav-label">Workspace</p><NavLink to="/campaigns"><LayoutDashboard/><span>Campaigns</span></NavLink><NavLink to="/creatives"><FileImage/><span>Creatives</span></NavLink><NavLink to="/audiences"><Users/><span>Audiences</span><em>Soon</em></NavLink><p className="nav-label second">Manage</p><NavLink to="/settings/meta-connection"><Link2/><span>Meta connection</span></NavLink><NavLink to="/settings"><Settings/><span>Settings</span></NavLink></nav>
+      <nav><p className="nav-label">Workspace</p><NavLink to="/goals"><LayoutDashboard/><span>My Goals</span></NavLink><NavLink to="/media"><FileImage/><span>My Images & Videos</span></NavLink><NavLink to="/audiences"><Users/><span>Audiences</span><em>Soon</em></NavLink><p className="nav-label second">Manage</p><NavLink to="/settings/meta-connection"><Link2/><span>Facebook setup</span></NavLink><NavLink to="/settings"><Settings/><span>Settings</span></NavLink></nav>
       <button className="sidebar-help" onClick={() => setHelp(true)}><CircleHelp/><div><b>Need a hand?</b><small>Open the quick-start guide</small></div></button>
       <div className="sidebar-user"><div className="avatar">{initials}</div><div><b>{user.name}</b><small>Administrator</small></div><button className="logout-icon" title="Sign out" onClick={logout}><LogOut/></button></div>
     </aside>
     <main><header className="topbar"><div><span className="eyebrow">Orbit workspace</span><h2>{title}</h2></div><div className="top-actions">
-      <Link to="/settings/meta-connection" className={`connection-pill ${meta.data?.connected ? "" : "offline"}`}><span/><Facebook/> {meta.data?.connected ? "Meta connected" : "Meta disconnected"}</Link>
+      <Link to="/settings/meta-connection" className={`connection-pill ${meta.data?.connected ? "" : "offline"}`}><span/><Facebook/> {meta.data?.connected ? "Facebook connected ✓" : "Connect Facebook →"}</Link>
       <button className="icon-btn" aria-label="Notifications" onClick={() => setNotifications(!notifications)}><Bell/><i/></button><div className="avatar small">{initials}</div>
       {notifications && <div className="notification-popover"><b>Read-only Meta mode</b><p>Live Meta data can be viewed after connection. Publishing is currently disabled.</p></div>}
     </div></header>{children}</main>
-    {help && <Modal title="Quick start" onClose={() => setHelp(false)}><div className="modal-body guide"><p>1. Configure your Meta App ID, App Secret, and redirect URI.</p><p>2. Connect Facebook and choose an ad account.</p><p>3. Use “Meta campaigns” to inspect live Ads Manager data.</p><p>4. Use “Local drafts” for campaigns created in Orbit. Publishing remains disabled.</p><button className="button primary" onClick={() => { setHelp(false); nav("/settings/meta-connection"); }}>Open Meta setup</button></div></Modal>}
+    {help && <Modal title="Quick start" onClose={() => setHelp(false)}><div className="modal-body guide"><p>1. Launch a Goal — the overall thing you want to achieve.</p><p>2. Pick or let AI suggest an Audience — the people who should see it.</p><p>3. Add an Ad — the message, image, or video people will see.</p><p>4. Connect Facebook when you are ready to use real ad account data.</p><button className="button primary" onClick={() => { setHelp(false); nav("/"); }}>Launch an ad</button></div></Modal>}
   </div>;
 }
 
@@ -107,7 +126,7 @@ function CampaignDashboard() {
   const qc = useQueryClient(); const toast = useToast(); const nav = useNavigate(); const meta = useMetaStatus();
   const [source,setSource]=useState<"META"|"LOCAL">("META"); const [query,setQuery]=useState(""); const [status,setStatus]=useState("ALL"); const [selectedAccount,setSelectedAccount]=useState("");
   const [confirmDelete,setConfirmDelete]=useState<Campaign|null>(null);
-  const accounts=useQuery({queryKey:["meta-accounts"],queryFn:()=>api<any>("/meta/ad-accounts"),enabled:!!meta.data?.connected});
+  const accounts=useQuery({queryKey:["meta-accounts"],queryFn:()=>api<any>("/meta/ad-accounts"),enabled:!!meta.data?.connected,...metaQueryOptions});
   useEffect(()=>{if(meta.data?.connection?.adAccountId&&!selectedAccount)setSelectedAccount(meta.data.connection.adAccountId)},[meta.data,selectedAccount]);
   const metaCampaigns=useQuery({queryKey:["meta-campaigns",selectedAccount],queryFn:()=>api<any[]>(`/meta/campaigns?adAccountId=${selectedAccount}`),enabled:source==="META"&&!!selectedAccount});
   const insights=useQuery({queryKey:["meta-account-insights",selectedAccount],queryFn:()=>api<any[]>(`/meta/account-insights?adAccountId=${selectedAccount}`),enabled:source==="META"&&!!selectedAccount});
@@ -133,6 +152,219 @@ function CampaignDashboard() {
 function ApiEmpty({title,text}:{title:string;text:string}){return <div className="empty"><Layers3/><h3>{title}</h3><p>{text}</p></div>}
 function EmptyState(){return <div className="empty"><Search/><h3>No campaigns found</h3><p>Create a campaign or change the current filters.</p></div>}
 function StatCard({icon,label,value,change,tone="purple"}:{icon:React.ReactNode;label:string;value:string;change:string;tone?:string}){return <div className="stat-card"><div className={`stat-icon ${tone}`}>{icon}</div><div><span>{label}</span><strong>{value}</strong><small>{change}</small></div></div>}
+
+const todayInput = () => new Date().toISOString().slice(0, 10);
+const goalOptionFor = (objective?: string | null, label?: string | null) => GOAL_OPTIONS.find(x => x.objective === objective || x.label === label) || GOAL_OPTIONS[0];
+const compactMoney = (value?: number | null, currency = "USD") => value == null ? "No budget set" : money(Number(value), currency);
+const countAds = (campaign: Campaign) => (campaign.adSets || []).reduce((total, adSet) => total + (adSet.ads?.length || adSet._count?.ads || 0), 0);
+const statusClass = (status?: string | null) => String(status || "DRAFT").toLowerCase();
+const metaPlainStatus = (status?: string | null) => status === "ACTIVE" ? "Running" : status === "PAUSED" ? "Paused" : status === "ARCHIVED" || status === "DELETED" ? "Finished" : "Not live yet";
+const metaObjectiveLabel = (objective?: string | null) => {
+  const mapped = GOAL_OPTIONS.find(x => x.objective === objective || (objective === "OUTCOME_SALES" && x.objective === "CONVERSIONS") || (objective === "OUTCOME_TRAFFIC" && x.objective === "TRAFFIC") || (objective === "OUTCOME_LEADS" && x.objective === "LEAD_GENERATION") || (objective === "OUTCOME_ENGAGEMENT" && x.objective === "ENGAGEMENT") || (objective === "OUTCOME_AWARENESS" && x.objective === "REACH"));
+  return mapped || GOAL_OPTIONS[0];
+};
+const metaInsight = (campaign: any) => campaign?.insights?.[0] || {};
+const metaMetricNumber = (campaign: any, key: string) => Number(metaInsight(campaign)?.[key] || 0);
+const leadMatchers = ["lead", "leadgen", "lead_grouped", "fb_pixel_lead", "onsite_conversion.lead", "offsite_conversion.fb_pixel_lead"];
+const purchaseMatchers = ["purchase", "omni_purchase", "offsite_conversion.fb_pixel_purchase"];
+const messageMatchers = ["messaging_conversation_started", "onsite_conversion.messaging", "contact"];
+const actionValue = (row: any, bucket: string, matchers: string[]) => (row?.[bucket] || []).reduce((total: number, item: any) => {
+  const type = String(item.action_type || "").toLowerCase();
+  return matchers.some(match => type.includes(match)) ? total + Number(item.value || 0) : total;
+}, 0);
+const actionCost = (row: any, matchers: string[]) => {
+  const costs = (row?.cost_per_action_type || []).filter((item: any) => matchers.some(match => String(item.action_type || "").toLowerCase().includes(match))).map((item: any) => Number(item.value || 0)).filter(Boolean);
+  return costs.length ? Math.min(...costs) : 0;
+};
+const friendlyActionName = (type: string) => {
+  const lower = type.toLowerCase();
+  if (leadMatchers.some(x => lower.includes(x))) return lower.includes("pixel") || lower.includes("offsite") ? "Website lead" : "Lead form";
+  if (purchaseMatchers.some(x => lower.includes(x))) return "Purchase";
+  if (messageMatchers.some(x => lower.includes(x))) return "Message/contact";
+  if (lower.includes("link_click")) return "Link click";
+  if (lower.includes("landing_page_view")) return "Landing page view";
+  if (lower.includes("add_to_cart")) return "Add to cart";
+  if (lower.includes("view_content")) return "Viewed content";
+  return type.replace(/_/g, " ").replace(/\b\w/g, char => char.toUpperCase());
+};
+const actionBreakdown = (row: any, limit = 5) => (row?.actions || []).map((item: any) => ({
+  type: String(item.action_type || ""),
+  label: friendlyActionName(String(item.action_type || "")),
+  value: Number(item.value || 0),
+})).filter((item: any) => item.value > 0).sort((a: any, b: any) => b.value - a.value).slice(0, limit);
+const marketerMetrics = (row: any) => {
+  const impressions = Number(row?.impressions || 0);
+  const clicks = Number(row?.clicks || row?.inline_link_clicks || 0);
+  const spend = Number(row?.spend || 0);
+  const leads = actionValue(row, "actions", leadMatchers);
+  const purchases = actionValue(row, "actions", purchaseMatchers);
+  const messages = actionValue(row, "actions", messageMatchers);
+  const videoStarts = actionValue(row, "video_play_actions", ["video_view", "video_play"]);
+  const videoCompletes = actionValue(row, "video_p100_watched_actions", ["video_view", "video_play"]);
+  return {
+    impressions,
+    reach: Number(row?.reach || 0),
+    clicks,
+    ctr: Number(row?.ctr || (impressions ? clicks / impressions * 100 : 0)),
+    spend,
+    cpm: Number(row?.cpm || (impressions ? spend / impressions * 1000 : 0)),
+    cpc: Number(row?.cpc || (clicks ? spend / clicks : 0)),
+    frequency: Number(row?.frequency || 0),
+    leads,
+    purchases,
+    messages,
+    costPerLead: actionCost(row, leadMatchers) || (leads ? spend / leads : 0),
+    leadRate: clicks ? leads / clicks * 100 : 0,
+    videoStarts,
+    videoCompletes,
+    videoCompletionRate: videoStarts ? videoCompletes / videoStarts * 100 : 0,
+    actions: actionBreakdown(row),
+    rawActions: row?.actions || [],
+    costPerActionType: row?.cost_per_action_type || [],
+  };
+};
+const audienceTitle = (adSet: AdSet) => {
+  if (adSet.audienceLabel) return adSet.audienceLabel;
+  const t:any = adSet.targeting || {};
+  const ages = t.ageMin && t.ageMax ? `Ages ${t.ageMin} to ${t.ageMax}` : "Everyone";
+  const country = t.locations?.[0]?.country || "your chosen location";
+  return `${ages} in ${country}`;
+};
+const describeAudience = (adSet: AdSet) => {
+  const t:any = adSet.targeting || {};
+  const gender = (t.genders || []).includes("MEN") ? "Men" : (t.genders || []).includes("WOMEN") ? "Women" : "Everyone";
+  const interests = (t.interests || []).map((x:any) => x.name).filter(Boolean).slice(0, 3).join(", ");
+  return `${gender} · Ages ${t.ageMin || 18} to ${t.ageMax || 65}${interests ? ` · Into ${interests}` : ""}`;
+};
+
+type GoalDraft = {
+  goal: string;
+  goalLabel: string;
+  description: string;
+  websiteUrl: string;
+  brandName: string;
+  campaignName: string;
+  adSetName: string;
+  adName: string;
+  primaryText: string;
+  headline: string;
+  adDescription: string;
+  callToAction: string;
+  destinationUrl: string;
+  targeting: any;
+  dailyBudget: number;
+  currency: string;
+  startDate: string;
+  endDate: string;
+  reasoning: { copy: string; targeting: string; budget: string };
+};
+
+const fallbackGoalDraft = (goal: string, goalLabel: string, description: string, websiteUrl: string, brandName: string): GoalDraft => ({
+  goal, goalLabel, description, websiteUrl, brandName,
+  campaignName: brandName ? `${brandName} ${goalLabel}` : goalLabel,
+  adSetName: "Best-fit audience",
+  adName: `${goalLabel} ad`,
+  primaryText: description ? description.slice(0, 180) : `Discover something worth checking out today. ${websiteUrl ? "Tap to learn more." : "Message us to learn more."}`,
+  headline: brandName ? `${brandName} is ready for you` : goalLabel,
+  adDescription: "A simple ad setup you can edit before going live.",
+  callToAction: goal === "CONVERSIONS" ? "SHOP_NOW" : goal === "LEAD_GENERATION" ? "SIGN_UP" : "LEARN_MORE",
+  destinationUrl: websiteUrl,
+  targeting: { ageMin: 25, ageMax: 45, genders: ["ALL"], locations: [{ country: "GB" }], interests: [{ name: "Small business" }, { name: "Online shopping" }], placements: "AUTOMATIC", manualPlacements: [], deviceTypes: "ALL", customAudiences: [] },
+  dailyBudget: 10,
+  currency: "GBP",
+  startDate: todayInput(),
+  endDate: "",
+  reasoning: {
+    copy: "The message keeps things clear and direct so a first-time customer quickly understands what you offer.",
+    targeting: "This starts with a broad but relevant group so Facebook has enough room to find people likely to respond.",
+    budget: "A modest daily limit is enough to start learning without spending too much too quickly.",
+  },
+});
+
+function GoalLaunchWizard(){
+  const nav=useNavigate();const toast=useToast();const qc=useQueryClient();const ai=useAiStatus();
+  const [step,setStep]=useState(1);const [goal,setGoal]=useState<(typeof GOAL_OPTIONS)[number]|null>(null);const [description,setDescription]=useState("");const [websiteUrl,setWebsiteUrl]=useState("");const [brandName,setBrandName]=useState("");const [draft,setDraft]=useState<GoalDraft|null>(null);const [progress,setProgress]=useState(0);const [asset,setAsset]=useState<File|null>(null);const [success,setSuccess]=useState<Campaign|null>(null);
+  useEffect(()=>{if(step!==2||!progress)return;const id=window.setInterval(()=>setProgress(x=>Math.min(98,x+17)),700);return()=>window.clearInterval(id)},[step,progress]);
+  const intake=useMutation({mutationFn:()=>api<any>("/ai/goal-intake",{method:"POST",body:JSON.stringify({goal:goal?.objective,description,websiteUrl,brandName})}),onSuccess:data=>{const base=fallbackGoalDraft(goal!.objective,goal!.label,description,websiteUrl,brandName);setDraft({...base,...data,goal:goal!.objective,goalLabel:goal!.label,description,websiteUrl,brandName,adDescription:data.description||base.adDescription,startDate:todayInput(),endDate:"",destinationUrl:websiteUrl||data.destinationUrl||"",reasoning:{...base.reasoning,...data.reasoning},targeting:{...base.targeting,...data.targeting}});setProgress(100);window.setTimeout(()=>setStep(3),350)},onError:(e:Error)=>{toast(`${e.message}. I made a safe editable draft instead.`,"info");setDraft(fallbackGoalDraft(goal!.objective,goal!.label,description,websiteUrl,brandName));setStep(3)}});
+  const save=useMutation({mutationFn:async(status:CampaignStatus)=>{if(!draft||!goal)throw new Error("Choose a goal first");const localStatus:CampaignStatus=status==="PUBLISHED"?"READY":status;const body={name:draft.campaignName,objective:goal.objective,goalLabel:goal.label,businessDescription:draft.description,websiteUrl:draft.destinationUrl||draft.websiteUrl,brandName:draft.brandName,aiGenerated:true,status:localStatus,dailyBudget:Number(draft.dailyBudget||0),lifetimeBudget:null,currency:draft.currency,startDate:draft.startDate,endDate:draft.endDate||null,specialAdCategory:"NONE",adSets:[{name:draft.adSetName,audienceLabel:audienceTitle({name:draft.adSetName,targeting:draft.targeting} as AdSet),audienceReasoning:draft.reasoning.targeting,status:localStatus,optimizationGoal:goal.objective==="TRAFFIC"?"LINK_CLICKS":"CONVERSIONS",billingEvent:"IMPRESSIONS",bidStrategy:"LOWEST_COST",bidAmount:null,targeting:{...draft.targeting,interests:(draft.targeting.interests||[]).map((x:any,i:number)=>({id:x.id||`interest-${i}`,name:x.name||String(x)})),customAudiences:[],manualPlacements:[],deviceTypes:"ALL"},ads:[{name:draft.adName,status:localStatus,format:"SINGLE_IMAGE",primaryText:draft.primaryText,headline:draft.headline,description:draft.adDescription,callToAction:draft.callToAction,destinationUrl:draft.destinationUrl,creatives:[]}]}]};const created=await api<Campaign>("/campaigns",{method:"POST",body:JSON.stringify(body)});if(status==="PUBLISHED"){await api(`/campaigns/${created.id}/publish`,{method:"POST"});await api(`/campaigns/${created.id}/status`,{method:"PATCH",body:JSON.stringify({status:"PUBLISHED"})});}return created},onSuccess:(created,status)=>{qc.invalidateQueries({queryKey:["campaigns"]});if(status==="PUBLISHED"){setSuccess(created);setStep(4)}else{toast("Saved for later");nav(`/goals/${created.id}`)}},onError:(e:Error)=>toast(e.message.includes("Publishing")?"Saved as ready to go live, but publishing is currently disabled in this build.":e.message,"error")});
+  if(success&&step===4){const opt=goalOptionFor(success.objective,success.goalLabel);return <div className="goal-wizard success-screen"><div className="success-card"><div className="success-check"><Check/></div><h1>🎉 Your ad setup is ready</h1><p>If publishing is enabled for this environment, this is where your ad goes live on Facebook and Instagram.</p><div className="plain-summary"><span>Goal: <b>{opt.label}</b></span><span>Showing to: <b>{draft?audienceTitle({name:draft.adSetName,targeting:draft.targeting} as AdSet):"Your chosen audience"}</b></span><span>Spending: <b>{compactMoney(success.dailyBudget,success.currency)} per day</b></span></div><div className="goal-actions"><Link className="button primary" to={`/goals/${success.id}`}>See how it's doing</Link><button className="button secondary" onClick={()=>{setGoal(null);setDraft(null);setSuccess(null);setStep(1)}}>Launch another ad</button></div></div></div>}
+  return <div className="goal-wizard"><div className="wizard-brand"><div className="brand"><span className="brand-mark"><Command/></span><strong>Orbit</strong></div><Link to="/goals">My Goals</Link></div>{step===1&&<section className="goal-step"><span className="eyebrow">Launch an Ad</span><h1>What do you want to achieve?</h1><p>Pick one — you can always create more goals later.</p><div className="goal-tile-grid">{GOAL_OPTIONS.map(item=><button key={item.objective} className={goal?.objective===item.objective?"selected":""} onClick={()=>setGoal(item)}><span>{item.emoji}</span><b>{item.label}</b><small>{item.description}</small>{goal?.objective===item.objective&&<CheckCircle2/>}</button>)}</div>{goal&&<button className="button primary big" onClick={()=>setStep(2)}>Continue <ArrowRight/></button>}</section>}{step===2&&<section className="goal-step narrow"><button className="back-link" onClick={()=>setStep(1)}><ArrowLeft/> Back</button>{progress?<div className="ai-building"><Sparkles/><h1>Our AI is building your ad setup…</h1><p>{progress<35?"Figuring out your audience…":progress<70?"Writing your ad text…":"Choosing the best settings…"}</p><div><i style={{width:`${progress}%`}}/></div></div>:<><span className="eyebrow">{goal?.label}</span><h1>Tell us about what you're promoting</h1><Field label="Describe what you're advertising in a few sentences"><textarea className="large-textarea" value={description} onChange={e=>setDescription(e.target.value)} placeholder="e.g. I sell handmade candles online and want more people to buy from my Shopify store. My candles are eco-friendly and made in London."/></Field><div className="form-row"><Field label="Link to your website"><input type="url" value={websiteUrl} onChange={e=>setWebsiteUrl(e.target.value)} placeholder="https://..."/></Field><Field label="Your business or brand name"><input value={brandName} onChange={e=>setBrandName(e.target.value)} placeholder="Lumina Candles"/></Field></div>{ai.data?.exhausted&&<div className="ai-budget-warning exhausted"><Sparkles/><div><b>AI suggestions are unavailable until next month</b><p>You can still create and manage ads manually.</p></div></div>}<div className="goal-actions"><button className="link-button" onClick={()=>{setDraft(fallbackGoalDraft(goal!.objective,goal!.label,description,websiteUrl,brandName));setStep(3)}}>Skip — let me edit a simple setup</button><button className="button primary" disabled={!goal||intake.isPending} onClick={()=>{setProgress(10);ai.data?.enabled?intake.mutate():setTimeout(()=>{setDraft(fallbackGoalDraft(goal!.objective,goal!.label,description,websiteUrl,brandName));setStep(3)},400)}}>Continue</button></div></>}</section>}{step===3&&draft&&<section className="goal-step review"><button className="back-link" onClick={()=>setStep(2)}><ArrowLeft/> Back</button><span className="eyebrow">{goal?.emoji} {goal?.label}</span><h1>Here's what we've prepared for you</h1><p>Everything is editable. No blank boxes, no jargon.</p><div className="prepared-grid"><details open><summary>📣 Your message</summary><Field label={PLAIN_LANGUAGE.fields.primaryText}><textarea value={draft.primaryText} onChange={e=>setDraft({...draft,primaryText:e.target.value})}/></Field><Field label={PLAIN_LANGUAGE.fields.headline}><input value={draft.headline} onChange={e=>setDraft({...draft,headline:e.target.value})}/></Field><Field label={PLAIN_LANGUAGE.fields.description}><input value={draft.adDescription} onChange={e=>setDraft({...draft,adDescription:e.target.value})}/></Field><div className="form-row"><Field label={PLAIN_LANGUAGE.fields.callToAction}><select value={draft.callToAction} onChange={e=>setDraft({...draft,callToAction:e.target.value})}>{["SHOP_NOW","LEARN_MORE","SIGN_UP","CONTACT_US","DOWNLOAD"].map(x=><option key={x}>{x}</option>)}</select></Field><Field label={PLAIN_LANGUAGE.fields.destinationUrl}><input type="url" value={draft.destinationUrl} onChange={e=>setDraft({...draft,destinationUrl:e.target.value})}/></Field></div><details className="why"><summary>Why did AI write it this way?</summary><p>{draft.reasoning.copy}</p></details></details><details open><summary>👥 Who sees it</summary><div className="chip-line"><span>{(draft.targeting.locations||[]).map((x:any)=>x.country).join(", ")||"Your chosen location"}</span><span>Ages {draft.targeting.ageMin} to {draft.targeting.ageMax}</span><span>{(draft.targeting.genders||[]).includes("MEN")?"Men":(draft.targeting.genders||[]).includes("WOMEN")?"Women":"Everyone"}</span>{(draft.targeting.interests||[]).map((x:any)=><span key={x.name}>{x.name}</span>)}<span>Facebook and Instagram (automatic — recommended)</span></div><div className="form-row"><Field label="Minimum age"><input type="number" value={draft.targeting.ageMin} onChange={e=>setDraft({...draft,targeting:{...draft.targeting,ageMin:Number(e.target.value)}})}/></Field><Field label="Maximum age"><input type="number" value={draft.targeting.ageMax} onChange={e=>setDraft({...draft,targeting:{...draft.targeting,ageMax:Number(e.target.value)}})}/></Field></div><Field label={PLAIN_LANGUAGE.fields.interests}><input value={(draft.targeting.interests||[]).map((x:any)=>x.name).join(", ")} onChange={e=>setDraft({...draft,targeting:{...draft.targeting,interests:e.target.value.split(",").map(name=>({name:name.trim()})).filter(x=>x.name)}})}/></Field><details className="why"><summary>Why did AI choose this audience?</summary><p>{draft.reasoning.targeting}</p></details></details><details open><summary>💰 Budget & timing</summary><div className="form-row"><Field label={PLAIN_LANGUAGE.fields.dailyBudget}><input type="number" min="1" value={draft.dailyBudget} onChange={e=>setDraft({...draft,dailyBudget:Number(e.target.value)})}/></Field><Field label={PLAIN_LANGUAGE.fields.currency}><select value={draft.currency} onChange={e=>setDraft({...draft,currency:e.target.value})}>{["GBP","USD","EUR","INR"].map(x=><option key={x}>{x}</option>)}</select></Field></div><div className="form-row"><Field label={PLAIN_LANGUAGE.fields.startDate}><input type="date" value={draft.startDate} onChange={e=>setDraft({...draft,startDate:e.target.value})}/></Field><Field label={PLAIN_LANGUAGE.fields.endDate}><input type="date" value={draft.endDate} onChange={e=>setDraft({...draft,endDate:e.target.value})}/></Field></div><p className="plain-note">We'll automatically get you the best results for your budget.</p><details className="why"><summary>Why this budget?</summary><p>{draft.reasoning.budget}</p></details></details></div><label className="big-upload"><UploadCloud/><b>{asset?.name||"Upload your image or video"}</b><small>You can skip this and add media later.</small><input type="file" accept="image/*,video/mp4" onChange={e=>setAsset(e.target.files?.[0]||null)}/></label><div className="goal-actions final"><button className="button secondary" disabled={save.isPending} onClick={()=>save.mutate("DRAFT")}>Save for later</button><button className="button primary" disabled={save.isPending} onClick={()=>save.mutate("PUBLISHED")}>{save.isPending?"Saving...":"Go Live"}</button></div></section>}</div>
+}
+
+function GoalsDashboard(){
+  const nav=useNavigate();const meta=useMetaStatus();const [query,setQuery]=useState("");const [filter,setFilter]=useState("All");const [sort,setSort]=useState("Newest first");const [selectedAccount,setSelectedAccount]=useState("");const [showMetaGoals,setShowMetaGoals]=useState(true);const [showDrafts,setShowDrafts]=useState(true);
+  const campaigns=useQuery({queryKey:["campaigns"],queryFn:()=>api<Campaign[]>("/campaigns").then(x=>x.map(campaignInclude))});
+  const accounts=useQuery({queryKey:["meta-accounts"],queryFn:()=>api<any>("/meta/ad-accounts"),enabled:!!meta.data?.connected,...metaQueryOptions});
+  useEffect(()=>{if(meta.data?.connection?.adAccountId&&!selectedAccount)setSelectedAccount(meta.data.connection.adAccountId)},[meta.data,selectedAccount]);
+  const accountRows=accounts.data?.accounts||[];
+  const account=accountRows.find((a:any)=>String(a.id).replace("act_","")===selectedAccount);
+  const metaCampaigns=useQuery({queryKey:["meta-goal-campaigns",selectedAccount],queryFn:()=>api<any[]>(`/meta/campaigns?adAccountId=${selectedAccount}&includeInsights=1`),enabled:!!meta.data?.connected&&!!selectedAccount,...metaQueryOptions});
+  let rows=(campaigns.data||[]).filter(c=>c.name.toLowerCase().includes(query.toLowerCase()));
+  if(filter!=="All")rows=rows.filter(c=>plainStatus(c.status)===filter||filter==="Running"&&c.status==="PUBLISHED"||filter==="Not live yet"&&c.status==="DRAFT"||filter==="Finished"&&c.status==="ARCHIVED");
+  rows=[...rows].sort((a,b)=>sort==="Spending most"?Number(b.dailyBudget||0)-Number(a.dailyBudget||0):sort==="Best performing"?countAds(b)-countAds(a):new Date(b.updatedAt).getTime()-new Date(a.updatedAt).getTime());
+  let liveRows=(metaCampaigns.data||[]).filter(c=>String(c.name||"").toLowerCase().includes(query.toLowerCase()));
+  if(filter!=="All")liveRows=liveRows.filter(c=>metaPlainStatus(c.effective_status||c.status)===filter);
+  liveRows=[...liveRows].sort((a,b)=>sort==="Spending most"?metaMetricNumber(b,"spend")-metaMetricNumber(a,"spend"):sort==="Best performing"?metaMetricNumber(b,"clicks")-metaMetricNumber(a,"clicks"):new Date(b.updated_time||b.created_time||0).getTime()-new Date(a.updated_time||a.created_time||0).getTime());
+  return <div className="page goals-page"><div className="page-heading"><div><h1>My Goals</h1><p>Your goals contain audiences, and each audience contains ads. Live Facebook campaigns are shown here too.</p></div><Link className="button primary launch-button" to="/"><Plus/> Launch a new goal</Link></div>
+    {meta.data?.connected?<section className="account-selector panel goal-account-selector"><div><span className="eyebrow">Viewing Facebook ad account</span><select value={selectedAccount} onChange={e=>setSelectedAccount(e.target.value)}><option value="">Select an ad account</option>{accountRows.map((a:any)=><option key={a.id} value={String(a.id).replace("act_","")}>{a.name} · {a.currency} · {a.business?.name||a.accessSource} · {a.id}</option>)}</select></div><button className="button secondary" onClick={()=>{accounts.refetch();metaCampaigns.refetch();}}><RefreshCw/> Refresh Facebook data</button></section>:<section className="panel connect-empty compact"><Facebook/><h2>Connect Facebook to see existing ads</h2><p>Once connected, your live campaigns from each ad account appear here as Goals.</p><Link className="button primary" to="/settings/meta-connection">Connect Facebook</Link></section>}
+    <section className="goal-toolbar panel"><div className="filter-pills">{["All","Running","Paused","Not live yet","Finished"].map(x=><button key={x} className={filter===x?"active":""} onClick={()=>setFilter(x)}>{x}</button>)}</div><div className="search"><Search/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search your goals…"/></div><select value={sort} onChange={e=>setSort(e.target.value)}><option>Newest first</option><option>Spending most</option><option>Best performing</option></select></section>
+    {metaCampaigns.isError&&<div className="setup-error"><X/><div><b>Could not load Facebook goals</b><p>{readableMetaError(metaCampaigns.error)}</p></div></div>}
+    {!!selectedAccount&&<button className="goal-section-title collapsible" onClick={()=>setShowMetaGoals(x=>!x)}><span><h2>Existing Facebook goals</h2><p>{account?.name||"Selected ad account"} · {liveRows.length} goal{liveRows.length===1?"":"s"} · real performance from Meta</p></span><ChevronDown className={showMetaGoals?"open":""}/></button>}
+    {showMetaGoals&&(metaCampaigns.isLoading?<Loading label="Loading existing Facebook ads..."/>:liveRows.length?<div className="goal-card-grid meta-goal-grid">{liveRows.map(c=><MetaGoalCard key={c.id} campaign={c} account={account} accountId={selectedAccount} onOpen={()=>nav(`/goals/meta/${c.id}?adAccountId=${selectedAccount}`)}/>)}</div>:selectedAccount&&<section className="panel goal-empty small"><div>📭</div><h2>No Facebook goals found for this account</h2><p>Try another account or change the filters.</p></section>)}
+    <button className="goal-section-title collapsible" onClick={()=>setShowDrafts(x=>!x)}><span><h2>Orbit drafts</h2><p>{rows.length} goal{rows.length===1?"":"s"} created inside this dashboard</p></span><ChevronDown className={showDrafts?"open":""}/></button>
+    {showDrafts&&(campaigns.isLoading?<Loading/>:rows.length?<div className="goal-card-grid">{rows.map(c=><GoalCard key={c.id} campaign={c} onOpen={()=>nav(`/goals/${c.id}`)}/>)}</div>:<section className="panel goal-empty"><div>🚀</div><h2>You haven't launched any local goals yet</h2><p>It only takes a few minutes to reach your first customers.</p><Link className="button primary" to="/">Launch my first ad</Link></section>)}<Link className="advanced-link" to="/advanced/campaigns/new">Advanced mode</Link></div>
+}
+
+function GoalCard({campaign,onOpen}:{campaign:Campaign;onOpen:()=>void}){
+  const opt=goalOptionFor(campaign.objective,campaign.goalLabel);const audiences=campaign._count?.adSets??campaign.adSets.length;const ads=countAds(campaign);
+  return <article className="goal-card" onClick={onOpen}><div className="goal-thumb">{campaign.adSets?.[0]?.ads?.[0]?.creatives?.[0]?.fileUrl?<img src={campaign.adSets[0].ads[0].creatives[0].fileUrl} alt=""/>:<span>{opt.emoji}</span>}</div><div className="goal-card-main"><div className="goal-card-title"><div><h3>{campaign.name}</h3><p className="goal-type-line">{opt.emoji} {campaign.goalLabel||opt.label}</p></div><span className={`plain-status status-${statusClass(campaign.status)}`}><i/>{plainStatus(campaign.status)}</span></div><small>{audiences} audience{audiences===1?"":"s"} · {ads} ad{ads===1?"":"s"}</small><div className="goal-metrics"><span><b>0</b>People reached</span><span><b>0</b>Clicks</span><span><b>{compactMoney(0,campaign.currency)}</b>Spent so far</span></div><div className="goal-card-actions"><button onClick={e=>e.stopPropagation()} className="button secondary">Pause</button><button className="button primary" onClick={e=>{e.stopPropagation();onOpen()}}>See results</button><ImproveButton level="goal" entityId={campaign.id} title={campaign.name} metrics={{goal:campaign.objective,spend:Number(campaign.dailyBudget||0)}} currentData={campaign}/></div></div></article>
+}
+
+function MetaGoalCard({campaign,account,accountId,onOpen}:{campaign:any;account:any;accountId:string;onOpen:()=>void}){
+  const opt=metaObjectiveLabel(campaign.objective);const metrics=metaInsight(campaign);const status=campaign.effective_status||campaign.status;
+  return <article className="goal-card meta-card" onClick={onOpen}><div className="goal-thumb meta"><span>{opt.emoji}</span><Facebook/></div><div className="goal-card-main"><div className="goal-card-title"><div><h3>{campaign.name}</h3><p className="goal-type-line">{opt.emoji} {opt.label}</p></div><span className={`plain-status status-${String(status).toLowerCase()}`}><i/>{metaPlainStatus(status)}</span></div><small>Existing Facebook goal · {account?.name||`Ad account ${accountId}`}</small><div className="goal-metrics"><span><b>{Number(metrics.reach||0).toLocaleString()}</b>People reached</span><span><b>{Number(metrics.clicks||metrics.inline_link_clicks||0).toLocaleString()}</b>Clicks</span><span><b>{compactMoney(Number(metrics.spend||0),account?.currency||"USD")}</b>Spent so far</span></div><div className="goal-card-actions"><button className="button primary" onClick={e=>{e.stopPropagation();onOpen()}}>See results</button><ImproveButton level="goal" entityId={campaign.id} title={campaign.name} metrics={{impressions:Number(metrics.impressions||0),reach:Number(metrics.reach||0),clicks:Number(metrics.clicks||0),ctr:Number(metrics.ctr||0),spend:Number(metrics.spend||0),cpm:Number(metrics.cpm||0),cpc:Number(metrics.cpc||0),frequency:Number(metrics.frequency||0),goal:campaign.objective,daysRunning:campaign.start_time?Math.max(1,Math.round((Date.now()-new Date(campaign.start_time).getTime())/86400000)):0}} currentData={{...campaign,currency:account?.currency||"USD"}}/></div></div></article>
+}
+
+type AnalysisTarget={level:"goal"|"audience"|"ad";entityId:string;title:string;metrics:any;currentData:any};
+function ImproveButton(props:AnalysisTarget){const [open,setOpen]=useState(false);return <><button className="button secondary" onClick={e=>{e.stopPropagation();setOpen(true)}}><Sparkles/> Improve this</button>{open&&<AnalysisDrawer target={props} onClose={()=>setOpen(false)}/>}</>}
+function AnalysisDrawer({target,onClose}:{target:AnalysisTarget;onClose:()=>void}){
+  const toast=useToast();const [accepted,setAccepted]=useState<string[]>([]);const analysis=useQuery({queryKey:["analysis",target.level,target.entityId],queryFn:()=>api<any>("/ai/analyse-ad",{method:"POST",body:JSON.stringify(target)}),retry:false});
+  const apply=async(improvement:any)=>{setAccepted(x=>[...x,improvement.field]);toast("Saved this improvement locally");};
+  const tone=analysis.data?.verdict==="DOING_WELL"?"good":analysis.data?.verdict==="NOT_WORKING"?"bad":"warn";
+  return <div className="drawer-backdrop" onMouseDown={onClose}><aside className="analysis-drawer" onMouseDown={e=>e.stopPropagation()}><header><div><span className="eyebrow">Advertising coach</span><h2>How is your "{target.title}" {target.level} doing?</h2><p>Running for {target.metrics?.daysRunning||0} days · {compactMoney(target.metrics?.spend||0,target.currentData?.currency||"USD")} spent</p></div><button onClick={onClose}><X/></button></header><div className="drawer-metrics expanded"><span><b>{Number(target.metrics?.reach||0).toLocaleString()}</b>People reached</span><span><b>{Number(target.metrics?.clicks||0).toLocaleString()}</b>People clicked</span><span><b>{Number(target.metrics?.ctr||0).toFixed(2)}%</b>% who clicked</span><span><b>{Number(target.metrics?.leads||0).toLocaleString()}</b>Leads</span><span><b>{target.metrics?.costPerLead?compactMoney(Number(target.metrics.costPerLead),target.currentData?.currency||"USD"):"—"}</b>Cost per lead</span><span><b>{target.metrics?.cpc?compactMoney(Number(target.metrics.cpc),target.currentData?.currency||"USD"):"—"}</b>Avg. cost per click</span></div>{target.metrics?.actions?.length>0&&<div className="action-breakdown"><b>What people did</b><div>{target.metrics.actions.map((x:any)=><span key={`${x.type}-${x.value}`}>{x.label}: {x.value.toLocaleString()}</span>)}</div></div>}{analysis.isLoading?<Loading label="Checking performance..."/>:analysis.isError?<div className="ai-budget-warning exhausted"><Sparkles/><div><b>{(analysis.error as Error).message}</b><p>You can still improve this manually from the goal detail page.</p></div></div>:<><section className={`verdict-card ${tone}`}><h3>{analysis.data.verdictHeadline}</h3><p>{analysis.data.summary}</p></section><section className="improvements"><h3>Here's how to make it better</h3>{analysis.data.improvements.map((x:any,i:number)=><article key={i}><h4>✏️ {x.what} <em>{x.confidence}</em></h4><p><b>Why:</b> {x.why}</p><blockquote>{x.newValue}</blockquote><button className="button secondary" onClick={()=>apply(x)}>Use this</button>{accepted.includes(x.field)&&<span className="updated-badge">✦ Updated</span>}</article>)}<p className="encouragement">{analysis.data.encouragement}</p></section></>}<footer>{accepted.length>0&&<button className="button primary" onClick={()=>toast("Relaunch flow is saved as a local improvement until publishing is enabled.","info")}>Relaunch with these changes</button>}<button className="button secondary" onClick={onClose}>Maybe later</button><Link to="/" onClick={onClose}>Start a completely new goal</Link></footer></aside></div>
+}
+
+function MetaGoalDetail(){
+  const {id}=useParams();const location=useLocation();const [expanded,setExpanded]=useState<Record<string,boolean>>({});
+  const accountId=new URLSearchParams(location.search).get("adAccountId")||"";
+  const detail=useQuery({queryKey:["meta-goal-detail",accountId,id],queryFn:()=>api<any>(`/meta/campaigns/${id}/detail?adAccountId=${accountId}`),enabled:!!id&&!!accountId,...metaQueryOptions});
+  if(!accountId)return <div className="page"><ApiEmpty title="Ad account missing" text="Return to My Goals and choose the Facebook ad account again."/></div>;
+  if(detail.isLoading)return <Loading label="Loading existing Facebook goal..."/>;
+  if(detail.isError)return <div className="page"><Link className="back-link" to="/goals"><ArrowLeft/> My Goals</Link><ApiEmpty title="Could not load this Facebook goal" text={readableMetaError(detail.error)}/></div>;
+  const data=detail.data;const c=data.campaign;const opt=metaObjectiveLabel(c.objective);const currency=data.account?.currency||"USD";const status=c.effective_status||c.status;
+  const insights:any[]=data.insights||[];const adInsights:any[]=data.adInsights||[];const adSets:any[]=data.adSets||[];const ads:any[]=data.ads||[];
+  const sum=(rows:any[],key:string)=>rows.reduce((n,row)=>n+Number(row[key]||0),0);const sumAction=(rows:any[],matchers:string[])=>rows.reduce((n,row)=>n+actionValue(row,"actions",matchers),0);const impressions=sum(insights,"impressions");const clicks=sum(insights,"clicks");const spend=sum(insights,"spend");const reach=sum(insights,"reach");const campaignLeads=sumAction(insights,leadMatchers);const campaignCostPerLead=campaignLeads?spend/campaignLeads:0;const ctr=impressions?clicks/impressions*100:Number(insights[0]?.ctr||0);const chart=insights.map(x=>({day:date(x.date_start),reach:Number(x.reach||0),spend:Number(x.spend||0)}));
+  const byAd=new Map(adInsights.map(x=>[String(x.ad_id),x]));const adsBySet=new Map<string,any[]>();ads.forEach(ad=>{const key=String(ad.adset_id);adsBySet.set(key,[...(adsBySet.get(key)||[]),ad])});
+  const adsetMetric=(adSetId:string,key:string)=>adInsights.filter(x=>String(x.adset_id)===String(adSetId)).reduce((n,x)=>n+Number(x[key]||0),0);
+  const daysRunning=c.start_time?Math.max(1,Math.round((Date.now()-new Date(c.start_time).getTime())/86400000)):0;
+  return <div className="page goal-detail"><Link className="back-link" to="/goals"><ArrowLeft/> My Goals</Link><section className="goal-hero panel meta-hero"><div><span className="goal-hero-icon">{opt.emoji}</span><div><span className="eyebrow">Existing Facebook goal · {data.account?.name||accountId}</span><h1>{c.name}</h1><p><span className={`plain-status status-${String(status).toLowerCase()}`}><i/>{metaPlainStatus(status)}</span> {c.start_time?`Running since ${date(c.start_time)}`:"Schedule managed in Facebook"}</p></div></div><div className="detail-actions static"><a className="button secondary" href={`https://business.facebook.com/adsmanager/manage/campaigns?act=${accountId}&selected_campaign_ids=${c.id}`} target="_blank" rel="noreferrer"><ExternalLink/> Open in Ads Manager</a><ImproveButton level="goal" entityId={c.id} title={c.name} metrics={{impressions,reach,clicks,ctr,spend,leads:campaignLeads,costPerLead:campaignCostPerLead,cpm:Number(insights[0]?.cpm||0),cpc:Number(insights[0]?.cpc||0),frequency:Number(insights[0]?.frequency||0),actions:insights.flatMap(actionBreakdown),goal:c.objective,daysRunning}} currentData={{...c,currency}}/></div></section>
+    <section className="detail-stats"><StatCard icon={<Users/>} label="People reached" value={reach.toLocaleString()} change="Unique people"/><StatCard icon={<Zap/>} label="Clicks" value={clicks.toLocaleString()} change="People who clicked"/><StatCard icon={<Target/>} label="Leads" value={campaignLeads.toLocaleString()} change={campaignCostPerLead?`${compactMoney(campaignCostPerLead,currency)} each`:"From Meta actions"}/><StatCard icon={<CreditCard/>} label="Spent" value={compactMoney(spend,currency)} change="From Facebook"/></section>
+    <section className="panel chart-panel goal-chart"><div className="panel-title"><div><h3>People reached and amount spent</h3><p>Real Facebook performance for this goal.</p></div><select><option>Last 7 days</option><option>Today</option><option>Last 30 days</option><option>All time</option></select></div>{chart.length?<ResponsiveContainer width="100%" height={260}><AreaChart data={chart}><CartesianGrid strokeDasharray="3 3" vertical={false}/><XAxis dataKey="day" label={{value:"Day",position:"insideBottom",offset:-5}}/><YAxis/><Tooltip/><Area type="monotone" dataKey="reach" name="People reached" stroke="#6558d3" fill="#eeecfb"/><Area type="monotone" dataKey="spend" name="Amount spent" stroke="#2d9b76" fill="#e5f6ee"/></AreaChart></ResponsiveContainer>:<div className="empty-chart">Facebook returned no performance for this date range.</div>}</section>
+    <section className="panel audience-section"><div className="panel-title"><div><h3>Who's seeing this goal's ads</h3><p>You have {adSets.length} audience group{adSets.length===1?"":"s"} inside this Facebook goal.</p></div></div>{adSets.map(adSet=>{const setAds=adsBySet.get(String(adSet.id))||[];const setRows=adInsights.filter(x=>String(x.adset_id)===String(adSet.id));const setSpend=adsetMetric(adSet.id,"spend");const setReach=adsetMetric(adSet.id,"reach");const setClicks=adsetMetric(adSet.id,"clicks");const setLeads=sumAction(setRows,leadMatchers);const setCostPerLead=setLeads?setSpend/setLeads:0;return <article className="audience-card" key={adSet.id}><div><h4>👥 {adSet.name}</h4><p><span className={`plain-status status-${String(adSet.effective_status||adSet.status).toLowerCase()}`}><i/>{metaPlainStatus(adSet.effective_status||adSet.status)}</span> · {setAds.length} ads inside</p><small>People reached: {setReach.toLocaleString()} · Leads: {setLeads.toLocaleString()} · Spent: {compactMoney(setSpend,currency)}</small></div><div className="audience-actions"><button className="button secondary" onClick={()=>setExpanded(x=>({...x,[adSet.id]:!x[adSet.id]}))}>{expanded[adSet.id]?"Hide ads":`See the ${setAds.length} ads`} <ChevronDown/></button><ImproveButton level="audience" entityId={adSet.id} title={adSet.name} metrics={{reach:setReach,clicks:setClicks,leads:setLeads,costPerLead:setCostPerLead,ctr:0,spend:setSpend,actions:setRows.flatMap(actionBreakdown),goal:c.objective,daysRunning}} currentData={adSet}/></div>{expanded[adSet.id]&&<div className="ad-inside-list">{setAds.map(ad=>{const m:any=byAd.get(String(ad.id))||{};const adPerf=marketerMetrics(m);return <article className="ad-inside-card expert" key={ad.id}><div className="mini-thumb">{ad.creative?.thumbnail_url?<img src={ad.creative.thumbnail_url} alt=""/>:<FileImage/>}</div><div className="ad-performance-body"><h5>{ad.name}</h5><p><span className={`plain-status status-${String(ad.effective_status||ad.status).toLowerCase()}`}><i/>{metaPlainStatus(ad.effective_status||ad.status)}</span></p><small>{adPerf.impressions.toLocaleString()} shown · {adPerf.clicks.toLocaleString()} clicked · {compactMoney(adPerf.spend,currency)} spent</small><div className="ad-performance-grid"><span><b>{adPerf.leads.toLocaleString()}</b>Leads</span><span><b>{adPerf.costPerLead?compactMoney(adPerf.costPerLead,currency):"—"}</b>Cost/lead</span><span><b>{adPerf.leadRate.toFixed(1)}%</b>Lead rate</span><span><b>{adPerf.cpc?compactMoney(adPerf.cpc,currency):"—"}</b>CPC</span><span><b>{adPerf.cpm?compactMoney(adPerf.cpm,currency):"—"}</b>CPM</span><span><b>{adPerf.frequency.toFixed(2)}</b>Frequency</span></div>{adPerf.actions.length>0?<div className="ad-action-chips">{adPerf.actions.map((x:any)=><span key={`${ad.id}-${x.type}`}>{x.label}: {x.value.toLocaleString()}</span>)}</div>:<p className="lead-detail-note">No lead/conversion actions returned for this ad in this date range.</p>}{adPerf.leads>0&&<p className="lead-detail-note">Lead counts are visible from Meta insights. Names, emails, and form answers require connecting Meta Lead Ads retrieval permissions.</p>}</div><a className="button secondary" href={`https://business.facebook.com/adsmanager/manage/ads?act=${accountId}&selected_ad_ids=${ad.id}`} target="_blank" rel="noreferrer">Open</a><ImproveButton level="ad" entityId={ad.id} title={ad.name} metrics={{...adPerf,goal:c.objective,daysRunning}} currentData={{...ad,primaryText:ad.creative?.body,headline:ad.creative?.title,currency,performance:adPerf}}/></article>})}</div>}</article>})}</section>
+    <section className="panel budget-sentence"><p>{c.daily_budget?<>Spending <b>{compactMoney(Number(c.daily_budget)/100,currency)} per day</b></>:c.lifetime_budget?<>Total budget <b>{compactMoney(Number(c.lifetime_budget)/100,currency)}</b></>:<>Budget managed inside Facebook</>} · Started <b>{date(c.start_time)}</b> · <b>{c.stop_time?date(c.stop_time):"No end date"}</b></p></section>
+  </div>
+}
+
+function GoalDetail(){
+  const {id}=useParams();const qc=useQueryClient();const toast=useToast();const [expanded,setExpanded]=useState<Record<string,boolean>>({});const [addAudience,setAddAudience]=useState(false);const detail=useQuery({queryKey:["campaign",id],queryFn:()=>api<Campaign>(`/campaigns/${id}`).then(campaignInclude)});const stats=useQuery({queryKey:["stats",id],queryFn:()=>api<any>(`/campaigns/${id}/stats`),enabled:!!detail.data?.facebookCampaignId});const status=useMutation({mutationFn:(next:CampaignStatus)=>api(`/campaigns/${id}/status`,{method:"PATCH",body:JSON.stringify({status:next})}),onSuccess:()=>{toast("Goal updated");qc.invalidateQueries({queryKey:["campaign",id]});qc.invalidateQueries({queryKey:["campaigns"]})}});
+  if(detail.isLoading)return <Loading label="Loading goal..."/>;if(!detail.data)return <div className="page"><ApiEmpty title="Goal not found" text="This goal may have been removed."/></div>;const c=detail.data;const opt=goalOptionFor(c.objective,c.goalLabel);const metrics=stats.data||{reach:0,clicks:0,ctr:0,spend:0,impressions:0,cpm:0,series:[]};const chart=(metrics.series||[]).map((x:any)=>({day:date(x.date),reach:x.reach,spend:x.spend}));
+  return <div className="page goal-detail"><Link className="back-link" to="/goals"><ArrowLeft/> My Goals</Link><section className="goal-hero panel"><div><span className="goal-hero-icon">{opt.emoji}</span><div><span className="eyebrow">{opt.label}</span><h1>{c.name}</h1><p><span className={`plain-status status-${statusClass(c.status)}`}><i/>{plainStatus(c.status)}</span> {c.status==="DRAFT"?"Not live yet":`Running since ${date(c.startDate)}`}</p></div></div><div className="detail-actions static">{c.status==="DRAFT"&&<button className="button primary" onClick={()=>status.mutate("READY")}>Go Live</button>}{c.status==="PUBLISHED"&&<button className="button secondary" onClick={()=>status.mutate("PAUSED")}>Pause</button>}<ImproveButton level="goal" entityId={c.id} title={c.goalLabel||opt.label} metrics={{...metrics,goal:c.objective,daysRunning:Math.max(1,Math.round((Date.now()-new Date(c.startDate).getTime())/86400000))}} currentData={c}/></div></section><section className="detail-stats"><StatCard icon={<Users/>} label="People reached" value={Number(metrics.reach||0).toLocaleString()} change="Unique people"/><StatCard icon={<Zap/>} label="Clicks" value={Number(metrics.clicks||0).toLocaleString()} change="People who clicked"/><StatCard icon={<Target/>} label={c.objective==="TRAFFIC"?"% who clicked":"Sales"} value={c.objective==="TRAFFIC"?`${Number(metrics.ctr||0).toFixed(2)}%`:"Hidden until Pixel is ready"} change="Based on your goal"/><StatCard icon={<CreditCard/>} label="Spent" value={compactMoney(Number(metrics.spend||0),c.currency)} change="Selected date range"/></section><section className="panel chart-panel goal-chart"><div className="panel-title"><div><h3>People reached and amount spent</h3><p>Plain performance view for this goal.</p></div><select><option>Last 7 days</option><option>Today</option><option>Last 30 days</option><option>All time</option></select></div>{chart.length?<ResponsiveContainer width="100%" height={260}><AreaChart data={chart}><CartesianGrid strokeDasharray="3 3" vertical={false}/><XAxis dataKey="day" label={{value:"Day",position:"insideBottom",offset:-5}}/><YAxis/><Tooltip/><Area type="monotone" dataKey="reach" name="People reached" stroke="#6558d3" fill="#eeecfb"/><Area type="monotone" dataKey="spend" name="Amount spent" stroke="#2d9b76" fill="#e5f6ee"/></AreaChart></ResponsiveContainer>:<div className="empty-chart">Performance appears here after this goal is linked to a live Facebook campaign.</div>}</section><section className="panel audience-section"><div className="panel-title"><div><h3>Who's seeing this goal's ads</h3><p>You have {c.adSets.length} audience group{c.adSets.length===1?"":"s"} inside this goal.</p></div><button className="button secondary" onClick={()=>setAddAudience(true)}><Plus/> Add another audience</button></div>{c.adSets.map(adSet=><article className="audience-card" key={adSet.id}><div><h4>👥 {audienceTitle(adSet)}</h4><p><span className={`plain-status status-${statusClass(adSet.status)}`}><i/>{plainStatus(adSet.status)}</span> · {adSet.ads.length} ads inside</p><small>People reached: 0 · Spent: {compactMoney(0,c.currency)}</small></div><div className="audience-actions"><button className="button secondary" onClick={()=>setExpanded(x=>({...x,[adSet.id!]:!x[adSet.id!]}))}>{expanded[adSet.id!]?"Hide ads":`See the ${adSet.ads.length} ads`} <ChevronDown/></button><ImproveButton level="audience" entityId={adSet.id!} title={audienceTitle(adSet)} metrics={{reach:0,clicks:0,ctr:0,spend:0,goal:c.objective}} currentData={adSet}/></div>{expanded[adSet.id!]&&<div className="ad-inside-list">{adSet.ads.map(ad=><article className="ad-inside-card" key={ad.id}><div className="mini-thumb">{ad.creatives?.[0]?.fileUrl?<img src={ad.creatives[0].fileUrl} alt=""/>:<FileImage/>}</div><div><h5>{ad.name}</h5><p><span className={`plain-status status-${statusClass(ad.status)}`}><i/>{plainStatus(ad.status)}</span></p><small>0 shown · 0 clicked · {compactMoney(0,c.currency)} spent</small></div><button className="button secondary">Pause</button><ImproveButton level="ad" entityId={ad.id!} title={ad.name} metrics={{reach:0,clicks:0,ctr:0,spend:0,goal:c.objective}} currentData={ad}/></article>)}</div>}</article>)}</section><section className="panel budget-sentence"><p>Spending <b>{compactMoney(c.dailyBudget,c.currency)} per day</b> · Started <b>{date(c.startDate)}</b> · <b>{c.endDate?date(c.endDate):"No end date"}</b></p><Link to={`/goals/${c.id}/edit`}>Change budget</Link></section><section className="panel history"><h3>Goal history</h3><p>Goal created — {date(c.createdAt)}</p>{c.status!=="DRAFT"&&<p>Prepared to go live — {date(c.updatedAt)}</p>}{c.relaunchReason&&<details><summary>Relaunched with improvements — {date(c.updatedAt)}</summary><p>{c.relaunchReason}</p></details>}</section>{addAudience&&<AudienceDrawer campaign={c} onClose={()=>setAddAudience(false)}/>}</div>
+}
+
+function AudienceDrawer({campaign,onClose}:{campaign:Campaign;onClose:()=>void}){
+  const qc=useQueryClient();const toast=useToast();const [country,setCountry]=useState("GB");const [ageMin,setAgeMin]=useState(25);const [ageMax,setAgeMax]=useState(45);const [interests,setInterests]=useState("");const save=useMutation({mutationFn:()=>api(`/campaigns/${campaign.id}/adsets`,{method:"POST",body:JSON.stringify({name:`Ages ${ageMin}-${ageMax} in ${country}`,audienceLabel:`Ages ${ageMin} to ${ageMax} in ${country}`,audienceReasoning:"Added manually from the simplified audience drawer.",status:"DRAFT",targeting:{ageMin,ageMax,genders:["ALL"],locations:[{country}],interests:interests.split(",").map((name,i)=>({id:`manual-${i}`,name:name.trim()})).filter(x=>x.name),customAudiences:[],placements:"AUTOMATIC",manualPlacements:[],deviceTypes:"ALL"},optimizationGoal:campaign.objective==="TRAFFIC"?"LINK_CLICKS":"CONVERSIONS",billingEvent:"IMPRESSIONS",bidStrategy:"LOWEST_COST",bidAmount:null})}),onSuccess:()=>{toast("Audience added");qc.invalidateQueries({queryKey:["campaign",campaign.id]});onClose()},onError:(e:Error)=>toast(e.message,"error")});
+  return <Modal title="Add another audience" onClose={onClose}><div className="modal-body"><Field label="Where are they?"><input value={country} onChange={e=>setCountry(e.target.value.toUpperCase())}/></Field><div className="form-row"><Field label="Minimum age"><input type="number" value={ageMin} onChange={e=>setAgeMin(Number(e.target.value))}/></Field><Field label="Maximum age"><input type="number" value={ageMax} onChange={e=>setAgeMax(Number(e.target.value))}/></Field></div><Field label="What are they into?"><input value={interests} onChange={e=>setInterests(e.target.value)} placeholder="Eco candles, home decor, gifts"/></Field><button className="button primary full" onClick={()=>save.mutate()}>Save audience</button></div></Modal>
+}
 
 type Wizard = { name:string; objective:string; productDescription:string; targetAudience:string; industry:string; budgetType:"DAILY"|"LIFETIME"; budget:number; currency:string; startDate:string; endDate:string; specialAdCategory:string; status:CampaignStatus; adSets:AdSet[] };
 const defaultWizard = (currency="USD"):Wizard => ({ name:"", objective:"SALES", productDescription:"", targetAudience:"", industry:"", budgetType:"DAILY", budget:150, currency, startDate:new Date(Date.now()+86_400_000).toISOString().slice(0,10), endDate:"", specialAdCategory:"NONE", status:"DRAFT", adSets:[emptyAdSet()] });
@@ -299,6 +531,7 @@ function MetaConnection(){
     {(urlError||!config?.ready)&&<div className="setup-error"><X/><div><b>{urlError||"Meta App credentials are not configured"}</b><p>Add the numeric App ID and App Secret to <code>.env</code>, then restart Docker. Your current META_APP_ID is empty.</p></div></div>}
     <section className={`connection-hero ${connected?"connected":""}`}><div className="meta-logo"><Facebook/></div><div><span className="eyebrow">{connected?"Connection active":config?.ready?"Ready to connect":"Setup required"}</span><h2>{connected?"Your Facebook account is connected":"Connect your Facebook account"}</h2><p>{connected?`Token expires ${date(connection.expiresAt)}. Selected ad account: act_${connection.adAccountId}.`:`OAuth callback: ${config?.redirectUri||"not configured"} · Graph API ${config?.apiVersion||"not configured"}`}</p></div>{connected?<button className="button secondary danger" onClick={()=>disconnect.mutate()}><LogOut/> Disconnect</button>:config?.ready?<a className="button primary" href="/api/meta/connect"><Facebook/> Connect Facebook account</a>:<button className="button primary" disabled><Facebook/> Add credentials first</button>}</section>
     {!connected&&<section className="panel setup-guide"><h3>Fix “Invalid App ID”</h3><ol><li>Create or open a Business app in Meta for Developers.</li><li>Copy its numeric <b>App ID</b> and <b>App Secret</b> into <code>.env</code>.</li><li>Add <code>{config?.redirectUri||"http://localhost:4000/api/meta/callback"}</code> to the app’s valid OAuth redirect URIs.</li><li>Restart with <code>docker compose restart app</code>, then connect again.</li></ol></section>}
+    <section className="panel settings-section permission-scope-card"><div><h3>Requested Meta permissions</h3><p>These are the gates Orbit asks for during Facebook login for read-only ad accounts, campaigns, insights, and Page selection.</p></div><div className="scope-grid">{(config?.scopes||[]).map((scope:string)=><span key={scope}>{scope}</span>)}</div><p className="lead-detail-note">Lead names, emails, phone numbers, and form answers require adding <code>leads_retrieval</code> after Meta enables or approves it for this app, plus access to the Page that owns the Lead Form.</p></section>
     {connected&&<section className="panel settings-section meta-defaults"><div><h3>Ad account selection</h3><p>Directly assigned, business-owned, and client accounts are combined here.</p></div>{accounts.isError&&<div className="form-errors"><p><X/>{(accounts.error as Error).message}</p></div>}{accounts.data&&!accounts.data.businessPermissionGranted&&<div className="setup-error"><X/><div><b>Business portfolio accounts need additional permission</b><p>Disconnect and reconnect to grant <code>business_management</code>. Directly assigned accounts are still shown.</p></div></div>}<div className="form-row"><Field label={`Ad account (${accounts.data?.accounts?.length||0} available)`}><select value={defaults.adAccountId} onChange={e=>setDefaults({...defaults,adAccountId:e.target.value})}>{accounts.isLoading?<option>Loading...</option>:(accounts.data?.accounts||[]).map((x:any)=><option key={x.id} value={String(x.id).replace("act_","")}>{x.name} · {x.currency} · {x.business?.name||x.accessSource} · {x.id}</option>)}</select></Field><Field label={`Facebook Page (${pages.data?.length||0} available)`}><select value={defaults.pageId} onChange={e=>setDefaults({...defaults,pageId:e.target.value})}><option value="">No default Page</option>{(pages.data||[]).map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></Field></div><button className="button primary" onClick={()=>saveDefaults.mutate()} disabled={saveDefaults.isPending||!defaults.adAccountId}>Save selected account</button></section>}
   </div>
 }

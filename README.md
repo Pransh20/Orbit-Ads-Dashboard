@@ -16,6 +16,16 @@ Orbit is a full-stack Meta campaign-management dashboard designed for marketing 
 
 Publishing endpoints and buttons are disabled while the read-only Meta integration is verified.
 
+## For the end user
+
+Orbit now presents the ad setup as a simple Goal → Audience → Ad flow:
+
+- A Goal is the overall thing the user wants, such as getting sales, website visits, leads, reach, engagement, or app downloads.
+- An Audience is the group of people inside that goal, such as people in a country, age range, gender, or interest group.
+- An Ad is the actual message, image, or video people will see inside an audience.
+- The beginner flow starts at `/`, asks one question at a time, and uses plain labels instead of Meta Ads Manager jargon.
+- The advanced technical builder is still available at `/advanced/campaigns/new` for power users.
+
 ## Quick start
 
 1. Copy the environment file:
@@ -46,18 +56,39 @@ Publishing endpoints and buttons are disabled while the read-only Meta integrati
 
 For a local Node workflow, run `npm run install:all`, start PostgreSQL, then run `npm --prefix server run prisma:generate`, `npm --prefix server run prisma:migrate`, `npm --prefix server run prisma:seed`, and `npm run dev`.
 
+## Production deployment
+
+Oracle VM + Nginx deployment notes for `orbit.ixclabs.com` are in [deploy/oracle-vm-orbit.md](/Users/pransharora/Documents/Codex/2026-06-22/files-mentioned-by-the-user-you/deploy/oracle-vm-orbit.md).
+
 ## Meta app setup
 
 1. Create an app at [Meta for Developers](https://developers.facebook.com/) using the Business app type.
 2. Add Facebook Login for Business and the Marketing API product.
 3. Add `http://localhost:4000/api/meta/callback` as a valid OAuth redirect URI.
-4. Request or enable `ads_management`, `ads_read`, `pages_show_list`, and `pages_read_engagement`.
-5. Put the app ID and secret into `.env`.
-6. Add a separate, long `TOKEN_ENCRYPTION_KEY` used to encrypt Meta tokens at rest.
-7. Set `META_API_VERSION` to a currently supported Graph API version.
-8. Keep `PUBLISHING_ENABLED=false`.
+4. Add your local URLs before trying OAuth:
+   - App Domains: `localhost`
+   - Website URL: `http://localhost:5173/`
+   - Valid OAuth redirect URI: `http://localhost:4000/api/meta/callback`
+5. Request or enable the stable local connection permission set:
+   - `ads_read`
+   - `ads_management`
+   - `business_management`
+   - `pages_show_list`
+   - `pages_read_engagement`
+6. Put the app ID and secret into `.env`.
+7. Add a separate, long `TOKEN_ENCRYPTION_KEY` used to encrypt Meta tokens at rest.
+8. Set `META_API_VERSION` to a currently supported Graph API version.
+9. Keep `PUBLISHING_ENABLED=false`.
 
-New Meta apps operate in development mode and can only authorize app-role users. Business Verification and App Review are normally required before other customers can connect.
+The OAuth scopes are configurable with `META_OAUTH_SCOPES`. The default is:
+
+```bash
+META_OAUTH_SCOPES=ads_read,ads_management,business_management,pages_show_list,pages_read_engagement
+```
+
+New Meta apps operate in development mode and can only authorize app-role users. Business Verification and App Review are normally required before other customers can connect. Do not publish the app just to fix local OAuth errors; first make the app domains, redirect URI, and requested scopes valid.
+
+`leads_retrieval` is required before Orbit can fetch actual Lead Ads form submissions such as names, emails, phone numbers, and form answers. `pages_manage_metadata` is useful later for Page webhook subscriptions. Add those scopes to `META_OAUTH_SCOPES` only after Meta shows them as available for this app and the required App Review/dependencies are in place. The current dashboard already reads lead counts and lead-related action metrics from Ads Insights; full lead record retrieval is the next integration layer after this permission is granted.
 
 ## Meta data behavior
 
