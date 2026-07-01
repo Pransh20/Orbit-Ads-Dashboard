@@ -217,7 +217,8 @@ app.put("/api/campaigns/:id", requireAuth, async (req: AuthedRequest, res) => {
 app.delete("/api/campaigns/:id", requireAuth, async (req: AuthedRequest, res) => {
   const campaign = await prisma.campaign.findFirst({ where: { id: idParam(req.params.id), createdById: req.userId } });
   if (!campaign) return res.status(404).json({ message: "Campaign not found" });
-  if (campaign.facebookCampaignId) return res.status(422).json({ message: "This goal is linked to Facebook. Delete is only available for Orbit drafts and will never change original Facebook ads." });
+  // Local-only delete. This intentionally does not call Meta, even when the
+  // local Orbit record has a facebookCampaignId from sync or paused publish.
   await prisma.campaign.delete({ where: { id: campaign.id } });
   res.status(204).end();
 });
