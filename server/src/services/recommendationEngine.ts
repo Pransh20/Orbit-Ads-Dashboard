@@ -285,7 +285,7 @@ export async function generateRecommendations(prisma: PrismaClient, input: { use
   }
   const insightRows = await retryOnce(() => graphList(`${accountPath(input.adAccountId)}/insights`, input.accessToken, {
     fields: "campaign_id,campaign_name,impressions,reach,clicks,ctr,spend,cpm,cpc,frequency,actions,action_values",
-    date_preset: "last_7_days",
+    date_preset: "last_7d",
     level: "campaign",
     limit: "500",
   }));
