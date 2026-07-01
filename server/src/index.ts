@@ -215,8 +215,10 @@ app.put("/api/campaigns/:id", requireAuth, async (req: AuthedRequest, res) => {
   res.json(updated);
 });
 app.delete("/api/campaigns/:id", requireAuth, async (req: AuthedRequest, res) => {
-  const result = await prisma.campaign.deleteMany({ where: { id: idParam(req.params.id), createdById: req.userId } });
-  if (!result.count) return res.status(404).json({ message: "Campaign not found" });
+  const campaign = await prisma.campaign.findFirst({ where: { id: idParam(req.params.id), createdById: req.userId } });
+  if (!campaign) return res.status(404).json({ message: "Campaign not found" });
+  if (campaign.facebookCampaignId) return res.status(422).json({ message: "This goal is linked to Facebook. Delete is only available for Orbit drafts and will never change original Facebook ads." });
+  await prisma.campaign.delete({ where: { id: campaign.id } });
   res.status(204).end();
 });
 app.patch("/api/campaigns/:id/status", requireAuth, async (req: AuthedRequest, res) => {
