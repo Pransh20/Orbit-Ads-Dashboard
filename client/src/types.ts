@@ -67,6 +67,7 @@ export type Campaign = {
   parentCampaignId?: string | null;
   relaunchReason?: string | null;
   aiGenerated?: boolean;
+  aiReasoning?: { copy?: string; targeting?: string; budget?: string } | null;
   status: CampaignStatus;
   dailyBudget: number | null;
   lifetimeBudget: number | null;
@@ -90,5 +91,22 @@ export type User = {
   defaultCurrency: string;
   timezone: string;
   createdAt: string;
-  metaConnection: null | { adAccountId: string; pageId: string; connectedAt: string; expiresAt: string };
+  metaConnection: null | { adAccountId: string; pageId: string; connectedAt: string; expiresAt: string; lastSyncedAt?: string | null };
+};
+
+export type ActionItem = {
+  id: string;
+  campaignId: string;
+  campaign?: { id: string; name: string; objective: string; currency: string };
+  type: string;
+  priority: "URGENT" | "RECOMMENDED" | "OPTIONAL";
+  headline: string;
+  bodyText: string;
+  keyMetric?: string | null;
+  keyMetricValue?: string | null;
+  keyMetricVerdict?: "GOOD" | "AVERAGE" | "POOR" | null;
+  actionLabel: string;
+  actionPayload?: any;
+  status: "PENDING" | "DISMISSED" | "COMPLETED";
+  generatedAt: string;
 };

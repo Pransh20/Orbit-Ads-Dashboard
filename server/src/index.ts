@@ -9,9 +9,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { requireAuth, type AuthedRequest } from "./middleware/auth.js";
-import { API_VERSION, graphGet, graphList, listAccessibleAdAccounts, metaConfigStatus, metaOAuthUrl, publishCampaign } from "./services/metaApi.js";
+import { API_VERSION, graphGet, graphList, graphPost, listAccessibleAdAccounts, metaConfigStatus, metaOAuthUrl, publishCampaign } from "./services/metaApi.js";
 import { aiStatus, analyseAd, creativeBrief, goalIntake, reviewCampaign, suggest, updateAiBudget } from "./services/aiSuggestions.js";
 import { deleteStoredFile, fileRecord, upload } from "./services/storage.js";
+import { generateRecommendations } from "./services/recommendationEngine.js";
+import { isMetaRateLimit as isMetaSyncRateLimit, isMetaTokenError, syncMetaAccount } from "./services/metaSync.js";
 
 const prisma = new PrismaClient();
 const app = express();
@@ -66,7 +68,7 @@ app.post("/api/auth/login", async (req, res) => {
 });
 app.post("/api/auth/logout", (_req, res) => { res.clearCookie("orbit_token"); res.status(204).end(); });
 app.get("/api/auth/me", requireAuth, async (req: AuthedRequest, res) => {
-  const user = await prisma.user.findUnique({ where: { id: req.userId }, select: { id: true, name: true, email: true, defaultCurrency: true, timezone: true, createdAt: true, metaConnection: { select: { adAccountId: true, pageId: true, connectedAt: true, expiresAt: true } } } });
+  const user = await prisma.user.findUnique({ where: { id: req.userId }, select: { id: true, name: true, email: true, defaultCurrency: true, timezone: true, createdAt: true, metaConnection: { select: { adAccountId: true, pageId: true, connectedAt: true, expiresAt: true, lastSyncedAt: true } } } });
   res.json(user);
 });
 app.put("/api/auth/profile", requireAuth, async (req: AuthedRequest, res) => {
@@ -177,7 +179,7 @@ app.put("/api/campaigns/:id", requireAuth, async (req: AuthedRequest, res) => {
   const owned = await prisma.campaign.findFirst({ where: { id: campaignId, createdById: req.userId } });
   if (!owned) return res.status(404).json({ message: "Campaign not found" });
   const { adSets, ...input } = req.body;
-  const allowed = ["name","objective","goalLabel","businessDescription","websiteUrl","brandName","parentCampaignId","relaunchReason","aiGenerated","status","dailyBudget","lifetimeBudget","currency","startDate","endDate","specialAdCategory"];
+  const allowed = ["name","objective","goalLabel","businessDescription","websiteUrl","brandName","parentCampaignId","relaunchReason","aiGenerated","aiReasoning","status","dailyBudget","lifetimeBudget","currency","startDate","endDate","specialAdCategory"];
   const data: any = Object.fromEntries(Object.entries(input).filter(([key]) => allowed.includes(key)));
   if (data.startDate) data.startDate = new Date(data.startDate as string);
   if ("endDate" in data) data.endDate = data.endDate ? new Date(data.endDate as string) : null;
@@ -269,7 +271,7 @@ app.get("/api/campaigns/:id/stats", requireAuth, async (req: AuthedRequest, res)
   const connection = await prisma.metaConnection.findUnique({ where: { userId: req.userId } });
   if (!connection) return res.status(422).json({ message: "Meta is not connected" });
   const params = new URLSearchParams({
-    fields: "impressions,reach,clicks,ctr,spend,cpm,cpc,purchase_roas",
+    fields: "impressions,reach,clicks,ctr,spend,cpm,cpc,frequency,purchase_roas",
     date_preset: String(req.query.range || "last_7d"),
     time_increment: "1",
     access_token: decryptToken(connection.accessToken),
@@ -287,6 +289,7 @@ app.get("/api/campaigns/:id/stats", requireAuth, async (req: AuthedRequest, res)
     ctr: impressions ? clicks / impressions * 100 : 0,
     cpm: impressions ? spend / impressions * 1000 : 0,
     cpc: clicks ? spend / clicks : 0,
+    frequency: series.length ? series.reduce((total: number, row: any) => total + Number(row.frequency || 0), 0) / series.length : 0,
     roas: Number(series.at(-1)?.purchase_roas?.[0]?.value || 0),
     series: series.map((row: any) => ({ date: row.date_start, spend: Number(row.spend || 0), reach: Number(row.reach || 0) })),
   });
@@ -294,9 +297,210 @@ app.get("/api/campaigns/:id/stats", requireAuth, async (req: AuthedRequest, res)
 app.get("/api/meta/status", requireAuth, async (req: AuthedRequest, res) => {
   const connection = await prisma.metaConnection.findUnique({
     where: { userId: req.userId },
-    select: { adAccountId: true, pageId: true, connectedAt: true, expiresAt: true },
+    select: { adAccountId: true, pageId: true, connectedAt: true, expiresAt: true, lastSyncedAt: true },
   });
   res.json({ connected: !!connection, publishingEnabled: publishingEnabled(), config: metaConfigStatus(), connection });
+});
+
+app.post("/api/meta/sync", requireAuth, async (req: AuthedRequest, res) => {
+  const connection = await prisma.metaConnection.findUnique({ where: { userId: req.userId } });
+  if (!connection) return res.status(400).json({ message: "Connect your Facebook account first in Settings." });
+  try {
+    res.json(await syncMetaAccount(prisma, {
+      userId: req.userId!,
+      accessToken: decryptToken(connection.accessToken),
+      adAccountId: connection.adAccountId,
+    }));
+  } catch (error: any) {
+    if (isMetaTokenError(error)) return res.status(401).json({ message: "Your Facebook connection has expired. Reconnect in Settings." });
+    if (isMetaSyncRateLimit(error)) return res.status(429).json({ message: "Meta is rate limiting requests. Try again in a minute." });
+    res.status(502).json({ message: error.message || "Meta sync failed", code: error.code });
+  }
+});
+
+const recommendationOrder = (items: any[]) => {
+  const rank: Record<string, number> = { URGENT: 0, RECOMMENDED: 1, OPTIONAL: 2 };
+  return [...items].sort((a, b) => (rank[a.priority] ?? 9) - (rank[b.priority] ?? 9) || new Date(b.generatedAt).getTime() - new Date(a.generatedAt).getTime());
+};
+
+app.get("/api/recommendations", requireAuth, async (req: AuthedRequest, res) => {
+  const rows = await prisma.actionItem.findMany({
+    where: { status: "PENDING", campaign: { createdById: req.userId } },
+    include: { campaign: { select: { id: true, name: true, objective: true, currency: true } } },
+    orderBy: { generatedAt: "desc" },
+  });
+  res.json(recommendationOrder(rows));
+});
+
+app.post("/api/recommendations/generate", requireAuth, async (req: AuthedRequest, res) => {
+  const connection = await prisma.metaConnection.findUnique({ where: { userId: req.userId } });
+  if (!connection) return res.status(400).json({ message: "Connect your Facebook account first in Settings." });
+  try {
+    const result = await generateRecommendations(prisma, {
+      userId: req.userId!,
+      accessToken: decryptToken(connection.accessToken),
+      adAccountId: connection.adAccountId,
+    });
+    res.json(result);
+  } catch (error: any) {
+    if (isMetaTokenError(error)) return res.status(401).json({ message: "Your Facebook connection has expired. Reconnect in Settings." });
+    if (isMetaSyncRateLimit(error)) return res.status(429).json({ message: "Meta is rate limiting requests. Try again in a minute." });
+    res.status(502).json({ message: error.message || "Could not generate recommendations", code: error.code });
+  }
+});
+
+async function ownedAction(actionId: string, userId: string) {
+  return prisma.actionItem.findFirst({
+    where: { id: actionId, campaign: { createdById: userId } },
+    include: { campaign: { include: { adSets: { include: { ads: { include: { creatives: true } } } } } } },
+  });
+}
+
+app.post("/api/recommendations/:id/act", requireAuth, async (req: AuthedRequest, res) => {
+  const action = await ownedAction(idParam(req.params.id), req.userId!);
+  if (!action) return res.status(404).json({ message: "Recommendation not found" });
+  const payload: any = action.actionPayload || {};
+  const campaign = action.campaign;
+  const connection = await prisma.metaConnection.findUnique({ where: { userId: req.userId } });
+  try {
+    let response: any = {};
+    if (payload.action === "PAUSE") {
+      if (!connection || !campaign.facebookCampaignId) return res.status(422).json({ message: "This action needs an active Meta connection and linked campaign." });
+      await graphPost(campaign.facebookCampaignId, decryptToken(connection.accessToken), { status: "PAUSED" });
+      await prisma.campaign.update({ where: { id: campaign.id }, data: { status: "PAUSED" } });
+    } else if (payload.action === "INCREASE_BUDGET") {
+      if (!connection || !campaign.facebookCampaignId) return res.status(422).json({ message: "This action needs an active Meta connection and linked campaign." });
+      const newBudget = Number(payload.newBudget || 0);
+      if (newBudget <= 0) return res.status(422).json({ message: "Recommendation is missing a valid new budget." });
+      await graphPost(campaign.facebookCampaignId, decryptToken(connection.accessToken), { daily_budget: Math.round(newBudget * 100) });
+      await prisma.campaign.update({ where: { id: campaign.id }, data: { dailyBudget: newBudget } });
+    } else if (payload.action === "RELAUNCH_WITH_COPY") {
+      const firstSet = campaign.adSets[0];
+      const firstAd = firstSet?.ads?.[0];
+      if (!firstSet || !firstAd) return res.status(422).json({ message: "This goal needs at least one audience and ad to clone." });
+      const clone = await prisma.campaign.create({
+        data: {
+          name: `${campaign.name} — improved draft`,
+          objective: campaign.objective,
+          goalLabel: campaign.goalLabel,
+          businessDescription: campaign.businessDescription,
+          websiteUrl: campaign.websiteUrl,
+          brandName: campaign.brandName,
+          parentCampaignId: campaign.id,
+          relaunchReason: action.headline,
+          aiGenerated: true,
+          aiReasoning: campaign.aiReasoning as any,
+          status: "DRAFT",
+          dailyBudget: campaign.dailyBudget,
+          lifetimeBudget: campaign.lifetimeBudget,
+          currency: campaign.currency,
+          startDate: campaign.startDate,
+          endDate: campaign.endDate,
+          specialAdCategory: campaign.specialAdCategory,
+          createdById: req.userId!,
+          adSets: { create: [{
+            name: `${firstSet.name} copy test`,
+            audienceLabel: firstSet.audienceLabel,
+            audienceReasoning: firstSet.audienceReasoning,
+            status: "DRAFT",
+            targeting: firstSet.targeting as any,
+            optimizationGoal: firstSet.optimizationGoal,
+            billingEvent: firstSet.billingEvent,
+            bidStrategy: firstSet.bidStrategy,
+            bidAmount: firstSet.bidAmount,
+            ads: { create: [{
+              name: `${firstAd.name} improved`,
+              status: "DRAFT",
+              format: firstAd.format,
+              primaryText: payload.newPrimaryText || firstAd.primaryText,
+              headline: payload.newHeadline || firstAd.headline,
+              description: firstAd.description,
+              callToAction: firstAd.callToAction,
+              destinationUrl: firstAd.destinationUrl,
+              pageId: firstAd.pageId,
+              instagramId: firstAd.instagramId,
+              creatives: { create: firstAd.creatives.map(({ id, adId, uploadedAt, ad, ...creative }: any) => creative) },
+            }] },
+          }] },
+        },
+      });
+      response = { redirectTo: `/goals/${clone.id}/edit` };
+    } else if (payload.action === "OPEN_REFRESH_FLOW") {
+      response = { redirectTo: `/goals/${campaign.id}/refresh-creative` };
+    } else if (payload.action === "CREATE_ADSET") {
+      const firstSet = campaign.adSets[0];
+      const firstAd = firstSet?.ads?.[0];
+      if (!firstSet || !firstAd) return res.status(422).json({ message: "This goal needs at least one existing ad to duplicate." });
+      await prisma.adSet.create({
+        data: {
+          campaignId: campaign.id,
+          name: payload.audienceDescription || "Suggested audience test",
+          audienceLabel: payload.audienceDescription || "Suggested audience test",
+          audienceReasoning: payload.reasoning || "Created from a recommendation.",
+          status: "DRAFT",
+          targeting: {
+            ...(firstSet.targeting as any),
+            ageMin: Number(payload.suggestedAgeMin || (firstSet.targeting as any).ageMin || 18),
+            ageMax: Number(payload.suggestedAgeMax || (firstSet.targeting as any).ageMax || 65),
+            interests: (payload.suggestedInterests || []).map((name: string, index: number) => ({ id: `suggested-${index}`, name })),
+          },
+          optimizationGoal: firstSet.optimizationGoal,
+          billingEvent: firstSet.billingEvent,
+          bidStrategy: firstSet.bidStrategy,
+          bidAmount: firstSet.bidAmount,
+          ads: { create: [{
+            name: `${firstAd.name} audience test`,
+            status: "DRAFT",
+            format: firstAd.format,
+            primaryText: firstAd.primaryText,
+            headline: firstAd.headline,
+            description: firstAd.description,
+            callToAction: firstAd.callToAction,
+            destinationUrl: firstAd.destinationUrl,
+            pageId: firstAd.pageId,
+            instagramId: firstAd.instagramId,
+            creatives: { create: firstAd.creatives.map(({ id, adId, uploadedAt, ad, ...creative }: any) => creative) },
+          }] },
+        },
+      });
+      response = { redirectTo: `/goals/${campaign.id}/edit` };
+    } else if (payload.action === "CREATE_AB_VARIANT") {
+      const firstSet = campaign.adSets[0];
+      const firstAd = firstSet?.ads?.[0];
+      if (!firstSet || !firstAd) return res.status(422).json({ message: "This goal needs at least one existing ad to duplicate." });
+      await prisma.ad.create({
+        data: {
+          adSetId: firstSet.id,
+          name: `${firstAd.name} — ${payload.angleName || "variant"}`,
+          status: "DRAFT",
+          format: firstAd.format,
+          primaryText: payload.alternativePrimaryText || firstAd.primaryText,
+          headline: payload.alternativeHeadline || firstAd.headline,
+          description: firstAd.description,
+          callToAction: firstAd.callToAction,
+          destinationUrl: firstAd.destinationUrl,
+          pageId: firstAd.pageId,
+          instagramId: firstAd.instagramId,
+          creatives: { create: firstAd.creatives.map(({ id, adId, uploadedAt, ad, ...creative }: any) => creative) },
+        },
+      });
+      response = { redirectTo: `/goals/${campaign.id}/edit` };
+    } else if (payload.action === "VIEW_DETAIL") {
+      response = { redirectTo: `/goals/${campaign.id}` };
+    } else {
+      return res.status(422).json({ message: "Unsupported recommendation action." });
+    }
+    const completed = await prisma.actionItem.update({ where: { id: action.id }, data: { status: "COMPLETED", completedAt: new Date() } });
+    res.json({ action: completed, ...response });
+  } catch (error: any) {
+    res.status(isMetaRateLimit(error) ? 429 : 502).json(metaErrorPayload(error));
+  }
+});
+
+app.post("/api/recommendations/:id/dismiss", requireAuth, async (req: AuthedRequest, res) => {
+  const action = await ownedAction(idParam(req.params.id), req.userId!);
+  if (!action) return res.status(404).json({ message: "Recommendation not found" });
+  res.json(await prisma.actionItem.update({ where: { id: action.id }, data: { status: "DISMISSED", dismissedAt: new Date() } }));
 });
 
 app.post("/api/campaigns/:id/adsets", requireAuth, async (req, res) => res.status(201).json(await prisma.adSet.create({ data: { ...req.body, campaignId: idParam(req.params.id) } })));

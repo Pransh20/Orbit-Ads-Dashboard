@@ -51,6 +51,10 @@ export async function graphGet(pathname: string, accessToken: string, params: Re
   return request(`${pathname}${query ? `?${query}` : ""}`, accessToken);
 }
 
+export async function graphPost(pathname: string, accessToken: string, body: Record<string, unknown> = {}) {
+  return request(pathname, accessToken, body);
+}
+
 export async function graphList(pathname: string, accessToken: string, params: Record<string, string> = {}) {
   const items: any[] = [];
   let next: string | undefined = `${base}/${pathname}?${new URLSearchParams({ ...params, access_token: accessToken })}`;

@@ -126,6 +126,35 @@ OPENAI_OUTPUT_COST_PER_1M=0
 
 Leaving these at zero still records token usage accurately without assuming a pricing rate that may change.
 
+## Recommendation engine
+
+The `/goals` page now has a "What needs your attention" panel above the existing Facebook goals and Orbit drafts. Click **Refresh** to run the full recommendation cycle:
+
+1. Sync active/paused campaigns, audiences, and ads from the connected Meta ad account into Orbit.
+2. Fetch last-7-days Meta insights for linked campaigns.
+3. Store a performance snapshot.
+4. Generate up to three pending action items per analysed campaign.
+
+New API routes:
+
+- `POST /api/meta/sync` imports ACTIVE and PAUSED Meta campaigns into local Campaign/AdSet/Ad records.
+- `GET /api/recommendations` lists pending action items for the signed-in user's campaigns.
+- `POST /api/recommendations/generate` runs sync + insight analysis + rules.
+- `POST /api/recommendations/:id/act` executes the suggested action.
+- `POST /api/recommendations/:id/dismiss` hides an action item.
+
+Action types:
+
+- `PAUSE_ALERT`: pauses the linked Meta campaign and marks the local goal paused.
+- `SCALE_BUDGET`: increases the linked Meta campaign daily budget by the suggested amount.
+- `FIX_PERFORMANCE`: creates a new local draft with improved copy; it does not change the running Meta ad.
+- `REFRESH_CREATIVE`: returns a refresh-flow redirect for replacing creative.
+- `NEW_AUDIENCE`: creates a draft audience/ad variation inside the same goal.
+- `BUDGET_REVIEW`: opens the goal detail page.
+- `AB_TEST`: creates a draft ad variation with a different message angle.
+
+Meta publish safety is unchanged: new objects created from Orbit still use paused/safe mode, and draft-generating recommendation actions do not affect existing running ads.
+
 ## Useful commands
 
 ```bash

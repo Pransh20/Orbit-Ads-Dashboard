@@ -59,6 +59,7 @@ model Campaign {
   parentCampaignId   String?
   relaunchReason     String?
   aiGenerated        Boolean        @default(false)
+  aiReasoning        Json?
   status             CampaignStatus @default(DRAFT)
   dailyBudget        Decimal?       @db.Decimal(12, 2)
   lifetimeBudget     Decimal?       @db.Decimal(12, 2)
@@ -74,10 +75,35 @@ model Campaign {
   createdBy          User           @relation(fields: [createdById], references: [id])
   adSets             AdSet[]
   performanceSnapshots PerformanceSnapshot[]
+  actions            ActionItem[]
 
   @@index([status])
   @@index([createdById])
   @@index([parentCampaignId])
+}
+
+model ActionItem {
+  id               String   @id @default(cuid())
+  campaignId       String
+  campaign         Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  type             String
+  priority         String   @default("RECOMMENDED")
+  headline         String
+  bodyText         String
+  keyMetric        String?
+  keyMetricValue   String?
+  keyMetricVerdict String?
+  actionLabel      String
+  actionPayload    Json?
+  status           String   @default("PENDING")
+  generatedAt      DateTime @default(now())
+  dismissedAt      DateTime?
+  completedAt      DateTime?
+  expiresAt        DateTime?
+
+  @@index([campaignId, status])
+  @@index([type, generatedAt])
+  @@index([priority, generatedAt])
 }
 
 model AdSet {
@@ -170,6 +196,7 @@ model MetaConnection {
   pageId      String
   connectedAt DateTime @default(now())
   expiresAt   DateTime
+  lastSyncedAt DateTime?
 }
 
 model AiUsageLog {
