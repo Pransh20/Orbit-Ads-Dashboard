@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { benchmarkFor, getVerdict } from "../constants/benchmarks.js";
 import { graphList } from "./metaApi.js";
-import { isMetaRateLimit, syncMetaAccount } from "./metaSync.js";
+import { isMetaRateLimit } from "./metaSync.js";
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const priorityRank: Record<string, number> = { URGENT: 0, RECOMMENDED: 1, OPTIONAL: 2 };
@@ -9,6 +9,12 @@ const money = (value: number, currency = "USD") => new Intl.NumberFormat("en-US"
 const leadTypes = ["lead", "onsite_conversion.lead_grouped", "offsite_conversion.fb_pixel_lead", "leadgen_grouped"];
 const purchaseTypes = ["purchase", "omni_purchase", "offsite_conversion.fb_pixel_purchase"];
 const engagementTypes = ["post_reaction", "comment", "post", "like"];
+const accountPath = (adAccountId: string) => `act_${String(adAccountId).replace("act_", "")}`;
+const centsToMoney = (value: unknown) => value == null || value === "" ? null : Math.round(Number(value) || 0) / 100;
+const metaDate = (value: unknown) => {
+  const parsed = value ? new Date(String(value)) : null;
+  return parsed && !Number.isNaN(parsed.getTime()) ? parsed : null;
+};
 
 function actionValue(row: any, matchers: string[]) {
   return (row.actions || []).reduce((total: number, item: any) => matchers.some(type => String(item.action_type || "").includes(type)) ? total + Number(item.value || 0) : total, 0);
@@ -27,6 +33,48 @@ async function retryOnce<T>(fn: () => Promise<T>) {
     await wait(2000);
     return fn();
   }
+}
+
+async function syncRunningCampaignsOnly(prisma: PrismaClient, input: { userId: string; accessToken: string; adAccountId: string }) {
+  const user = await prisma.user.findUnique({ where: { id: input.userId }, select: { defaultCurrency: true } });
+  const summary = { campaigns: { created: 0, updated: 0 }, adSets: { created: 0, updated: 0 }, ads: { created: 0, updated: 0 } };
+  const rows = await retryOnce(() => graphList(`${accountPath(input.adAccountId)}/campaigns`, input.accessToken, {
+    fields: "id,name,objective,status,effective_status,daily_budget,lifetime_budget,start_time,stop_time,special_ad_categories",
+    filtering: JSON.stringify([{ field: "effective_status", operator: "IN", value: ["ACTIVE"] }]),
+    limit: "100",
+  }));
+  const campaignIds: string[] = [];
+  for (const row of rows) {
+    const facebookCampaignId = String(row.id);
+    const existing = await prisma.campaign.findFirst({ where: { createdById: input.userId, facebookCampaignId } });
+    const data = {
+      name: row.name || "Running Facebook goal",
+      status: "PUBLISHED" as const,
+      dailyBudget: centsToMoney(row.daily_budget),
+      lifetimeBudget: centsToMoney(row.lifetime_budget),
+      startDate: metaDate(row.start_time) || existing?.startDate || new Date(),
+      endDate: metaDate(row.stop_time),
+      specialAdCategory: row.special_ad_categories?.[0] || existing?.specialAdCategory || "NONE",
+    };
+    const campaign = existing
+      ? await prisma.campaign.update({ where: { id: existing.id }, data })
+      : await prisma.campaign.create({
+        data: {
+          ...data,
+          facebookCampaignId,
+          objective: row.objective || "TRAFFIC",
+          currency: user?.defaultCurrency || "USD",
+          aiGenerated: false,
+          goalLabel: null,
+          createdById: input.userId,
+        },
+      });
+    campaignIds.push(campaign.id);
+    existing ? summary.campaigns.updated++ : summary.campaigns.created++;
+  }
+  const lastSyncedAt = new Date();
+  await prisma.metaConnection.update({ where: { userId: input.userId }, data: { lastSyncedAt } });
+  return { sync: { synced: summary, totalActive: rows.length, lastSyncedAt: lastSyncedAt.toISOString() }, campaignIds };
 }
 
 async function aiJson<T>(prompt: string, fallback: T): Promise<T> {
@@ -220,9 +268,30 @@ async function campaignActions(prisma: PrismaClient, campaign: any, row: any) {
 }
 
 export async function generateRecommendations(prisma: PrismaClient, input: { userId: string; accessToken: string; adAccountId: string }) {
-  const sync = await syncMetaAccount(prisma, input);
+  const { sync, campaignIds } = await syncRunningCampaignsOnly(prisma, input);
+  const syncedFromMeta = {
+    created: sync.synced.campaigns.created + sync.synced.adSets.created + sync.synced.ads.created,
+    updated: sync.synced.campaigns.updated + sync.synced.adSets.updated + sync.synced.ads.updated,
+  };
+  if (!campaignIds.length) {
+    await prisma.actionItem.deleteMany({ where: { status: "PENDING", campaign: { createdById: input.userId } } });
+    return {
+      actions: [],
+      analysed: 0,
+      skipped: 0,
+      syncedFromMeta,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+  const insightRows = await retryOnce(() => graphList(`${accountPath(input.adAccountId)}/insights`, input.accessToken, {
+    fields: "campaign_id,campaign_name,impressions,reach,clicks,ctr,spend,cpm,cpc,frequency,actions,action_values",
+    date_preset: "last_7_days",
+    level: "campaign",
+    limit: "500",
+  }));
+  const insightByCampaignId = new Map(insightRows.map((row: any) => [String(row.campaign_id), row]));
   const campaigns = await prisma.campaign.findMany({
-    where: { createdById: input.userId, facebookCampaignId: { not: null } },
+    where: { createdById: input.userId, id: { in: campaignIds }, facebookCampaignId: { not: null }, status: "PUBLISHED" },
     include: { adSets: { include: { ads: true } } },
   });
   const generated: any[] = [];
@@ -231,13 +300,7 @@ export async function generateRecommendations(prisma: PrismaClient, input: { use
 
   for (const campaign of campaigns) {
     try {
-      const insights = await retryOnce(() => graphList(`${campaign.facebookCampaignId}/insights`, input.accessToken, {
-        fields: "impressions,reach,clicks,ctr,spend,cpm,cpc,frequency,actions,action_values",
-        date_preset: "last_7_days",
-        level: "campaign",
-        limit: "10",
-      }));
-      const row = insights[0];
+      const row = insightByCampaignId.get(String(campaign.facebookCampaignId));
       if (!row || Number(row.spend || 0) <= 0) {
         skipped++;
         continue;
@@ -265,9 +328,7 @@ export async function generateRecommendations(prisma: PrismaClient, input: { use
     }
   }
 
-  if (analysedIds.length) {
-    await prisma.actionItem.deleteMany({ where: { campaignId: { in: analysedIds }, status: "PENDING" } });
-  }
+  await prisma.actionItem.deleteMany({ where: { status: "PENDING", campaign: { createdById: input.userId } } });
   const actions = generated.length
     ? await prisma.actionItem.createManyAndReturn({ data: generated })
     : [];
@@ -276,10 +337,7 @@ export async function generateRecommendations(prisma: PrismaClient, input: { use
     actions: ordered,
     analysed: analysedIds.length,
     skipped,
-    syncedFromMeta: {
-      created: sync.synced.campaigns.created + sync.synced.adSets.created + sync.synced.ads.created,
-      updated: sync.synced.campaigns.updated + sync.synced.adSets.updated + sync.synced.ads.updated,
-    },
+    syncedFromMeta,
     generatedAt: new Date().toISOString(),
   };
 }
